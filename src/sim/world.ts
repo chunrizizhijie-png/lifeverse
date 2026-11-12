@@ -181,7 +181,7 @@ export class World {
     }
     if (target) creature.angle = Math.atan2(target.z - creature.z, target.x - creature.x);
     else if ((this.tick + creature.id) % 19 === 0) creature.angle = this.random() * TAU;
-    this.move(creature, target ? 0.34 : 0.18);
+    this.move(creature, target ? 0.37 : 0.18);
     if (target && distance2(creature, target) < 0.85 ** 2 && this.random() < 0.31) {
       target.energy = 0;
       creature.energy += 42 * target.genes.size;

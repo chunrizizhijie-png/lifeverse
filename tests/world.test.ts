@@ -41,6 +41,31 @@ test('两种生态角色移动、繁殖、消耗能量和死亡', () => {
   assert.ok(child.genes.speed >= 0.65 && child.genes.speed <= 1.58);
 });
 
+test('成年琥脊兽能缩短与稍慢的逃跑苔叶兽之间的距离', () => {
+  const world = new World(DEFAULT_SEED);
+  const grazer = world.creatures.find(c => c.role === 'grazer')!;
+  const hunter = world.creatures.find(c => c.role === 'hunter')!;
+  const initialGrazerX = grazer.x;
+  const initialGap = 2;
+
+  // 在首只苔叶兽附近的陆地上安排一场直线追逐。
+  hunter.x = grazer.x - initialGap;
+  hunter.z = grazer.z;
+  grazer.genes.speed = 1;
+  hunter.genes.speed = 1.05;
+  for (const creature of [grazer, hunter]) {
+    creature.age = MATURE_AGE;
+    creature.energy = 65;
+    creature.cooldown = 99;
+  }
+  world.creatures = [grazer, hunter];
+
+  world.step();
+
+  assert.ok(grazer.x > initialGrazerX);
+  assert.ok(Math.hypot(grazer.x - hunter.x, grazer.z - hunter.z) < initialGap);
+});
+
 test('造物主促生、恢复能量和遗传调适分别作用于对应属性', () => {
   const world = new World();
   const child = world.creatures.find(c => c.age < MATURE_AGE)!;
