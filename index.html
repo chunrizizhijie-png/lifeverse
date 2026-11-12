@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#151e19">
+    <meta name="description" content="在生命之境里观察苔湾群岛，培育不同的生物，见证一个血脉的延续。">
+    <link rel="icon" type="image/png" href="/leaf.png">
+    <title>生命之境 · Lifeverse</title>
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="topbar-inner">
+        <div class="brand">
+          <span class="brand-mark" aria-hidden="true"><i></i></span>
+          <div><strong>生命之境</strong><span>LIFEVERSE</span></div>
+        </div>
+        <span class="version">Alpha 0.1</span>
+        <div class="top-actions">
+          <a class="repository" href="https://github.com/chunrizizhijie-png/lifeverse" target="_blank" rel="noopener">GitHub <span aria-hidden="true">↗</span></a>
+          <details class="save-menu" id="save-menu">
+            <summary class="button">存档 <span class="chevron" aria-hidden="true"></span></summary>
+            <div class="save-options">
+              <button id="save-world" type="button">保存当前世界</button>
+              <button id="load-world" type="button">读取本地存档</button>
+              <span id="save-description">此浏览器暂无存档</span>
+            </div>
+          </details>
+          <button class="button gold-button" id="new-world" type="button"><span aria-hidden="true">＋</span> 新世界</button>
+        </div>
+      </div>
+    </header>
+    <main class="page">
+      <header class="world-heading">
+        <div>
+          <h1 id="world-name">苔湾群岛</h1>
+          <p class="world-description"><span class="heading-leaf" aria-hidden="true"></span>生态世界 <span class="midpoint" aria-hidden="true">·</span> <span id="world-seed">种子 041827</span></p>
+        </div>
+        <div class="readouts" aria-label="世界状态">
+          <div class="readout"><span class="readout-icon sun-icon" aria-hidden="true">☼</span><div><span>气温</span><strong id="temperature">22°C</strong></div></div>
+          <div class="readout"><span class="readout-icon time-icon" aria-hidden="true"></span><div><span>世界时间</span><strong id="world-time">第 1 天 · 00:00</strong></div></div>
+        </div>
+      </header>
+
+      <div class="workspace">
+        <section class="world-panel" aria-label="生态地图与时间控制">
+          <div class="viewport" id="viewport">
+            <div class="map-surface" id="map-surface"></div>
+            <div class="map-vignette"></div>
+            <div class="map-status"><span class="status-dot" id="map-status-dot"></span><span id="map-status">生成群岛中</span></div>
+            <div class="selection-label" id="selection-label" hidden></div>
+            <div class="camera-buttons" role="group" aria-label="地图镜头">
+              <button id="zoom-in" type="button" aria-label="放大地图" title="放大">+</button>
+              <button id="zoom-out" type="button" aria-label="缩小地图" title="缩小">−</button>
+              <button id="reset-view" type="button" aria-label="复位镜头" title="复位镜头"><span class="focus-icon" aria-hidden="true"></span></button>
+            </div>
+            <div class="map-hint"><span class="mouse-icon" aria-hidden="true"></span><span class="desktop-hint">拖动旋转 · 滚轮缩放 · 点击生物</span><span class="touch-hint">拖动旋转 · 点选生物</span></div>
+          </div>
+          <div class="timebar">
+            <div class="transport" role="group" aria-label="模拟播放">
+              <button class="play-button" id="play" type="button" aria-label="暂停模拟" title="暂停 / 播放（空格）"><span class="play-glyph is-playing" aria-hidden="true"></span></button>
+              <button class="step-button" id="step" type="button" aria-label="推进一步" title="暂停时推进一步" disabled><span class="step-glyph" aria-hidden="true"></span></button>
+            </div>
+            <div class="speed-controls" role="group" aria-label="模拟速度">
+              <button type="button" data-speed="1" aria-pressed="true">1×</button>
+              <button type="button" data-speed="4" aria-pressed="false">4×</button>
+              <button type="button" data-speed="12" aria-pressed="false">12×</button>
+            </div>
+            <div class="timebar-status"><span class="status-dot" id="run-dot"></span><span id="run-status">演化中</span></div>
+          </div>
+        </section>
+
+        <aside class="inspector" aria-label="观察与干预">
+          <div class="tabs" role="tablist" aria-label="观察与干预面板">
+            <button id="individual-tab" type="button" role="tab" aria-controls="individual-panel" aria-selected="true">个体观察</button>
+            <button id="lineage-tab" type="button" role="tab" aria-controls="lineage-panel" aria-selected="false" tabindex="-1">血脉</button>
+            <button id="climate-tab" type="button" role="tab" aria-controls="climate-panel" aria-selected="false" tabindex="-1">环境</button>
+          </div>
+
+          <section class="tab-panel individual" id="individual-panel" role="tabpanel" aria-labelledby="individual-tab">
+            <div class="profile-title">
+              <div><h2 id="creature-name">等待观测</h2><p id="creature-meta">选择地图上的个体</p></div>
+              <label class="creature-picker">
+                <span class="sr-only">选择观察个体</span>
+                <span class="picker-value" id="picker-value" aria-hidden="true">—</span>
+                <select id="creature-picker" aria-label="选择观察个体" disabled><option>—</option></select>
+                <span class="chevron" aria-hidden="true"></span>
+              </label>
+            </div>
+            <div class="portrait" id="portrait">
+              <span class="portrait-corner tl" aria-hidden="true"></span><span class="portrait-corner tr" aria-hidden="true"></span>
+              <span class="portrait-corner bl" aria-hidden="true"></span><span class="portrait-corner br" aria-hidden="true"></span>
+              <span class="portrait-empty" id="portrait-empty">暂无在世个体</span>
+            </div>
+            <div class="meters">
+              <div class="meter"><span>能量</span><progress id="energy" value="0" max="100" aria-label="能量"></progress><output id="energy-value">—</output></div>
+              <div class="meter"><span>成熟度</span><progress id="maturity" value="0" max="100" aria-label="成熟度"></progress><output id="maturity-value">—</output></div>
+            </div>
+            <dl class="traits">
+              <div><dt>体型</dt><dd id="trait-size">—</dd></div>
+              <div><dt>移速</dt><dd id="trait-speed">—</dd></div>
+              <div><dt>适温</dt><dd id="trait-comfort">—</dd></div>
+            </dl>
+            <div class="gift-section">
+              <div class="gift-heading">
+                <h3>造物主恩赐</h3><button class="track" id="track" type="button" disabled><span aria-hidden="true">◇</span> 追踪血脉</button>
+              </div>
+              <div class="gift-buttons">
+                <button type="button" data-gift="grow" title="将幼体的成熟进程提前最多 200 世界分钟" disabled><span aria-hidden="true">✧</span> 促生</button>
+                <button type="button" data-gift="restore" title="恢复最多 35 点能量" disabled><span aria-hidden="true">＋</span> 恢复</button>
+                <button type="button" data-gift="adapt" title="将可遗传适温向当前气温调整最多 3°C" disabled><span aria-hidden="true">↝</span> 调适</button>
+              </div>
+              <p class="gift-note">促生与恢复作用于个体。调适可由后代继承。</p>
+            </div>
+          </section>
+
+          <section class="tab-panel" id="lineage-panel" role="tabpanel" aria-labelledby="lineage-tab" hidden>
+            <div class="section-intro"><h2>神选血脉</h2><p id="lineage-summary">选择一个在世个体，追踪它的后代。</p></div>
+            <button class="button" id="track-from-lineage" type="button" disabled>追踪当前个体</button>
+            <div id="lineage-data" hidden>
+              <dl class="traits lineage-totals">
+                <div><dt>累计后代</dt><dd id="descendants">0</dd></div>
+                <div><dt>在世后代</dt><dd id="descendants-alive">0</dd></div>
+                <div><dt>最深世代</dt><dd id="descendants-generation">—</dd></div>
+              </dl>
+              <h3 class="lineage-list-title">血脉记录</h3>
+              <ul class="lineage-list" id="lineage-list"></ul>
+            </div>
+          </section>
+
+          <section class="tab-panel" id="climate-panel" role="tabpanel" aria-labelledby="climate-tab" hidden>
+            <div class="section-intro"><h2>世界环境</h2><p>气候改变后，所有个体会在下一步模拟中受到影响。</p></div>
+            <div class="climate-controls">
+              <label class="slider-label" for="set-temperature"><strong>地表气温</strong><output id="set-temperature-value">22°C</output></label>
+              <input id="set-temperature" type="range" min="5" max="38" value="22">
+              <div class="range-ends"><span>5°C</span><span>38°C</span></div>
+              <p>偏离个体的适温会增加能耗。高处比低地冷。</p>
+              <label class="slider-label" for="set-rain"><strong>降水强度</strong><output id="set-rain-value">64%</output></label>
+              <input id="set-rain" type="range" min="10" max="100" value="64">
+              <div class="range-ends"><span>干旱</span><span>丰沛</span></div>
+              <p>降水增加时，苔叶兽可采食的资源恢复得更快。</p>
+              <button class="button" id="reset-climate" type="button">恢复初始气候</button>
+            </div>
+          </section>
+        </aside>
+      </div>
+
+      <section class="population" aria-labelledby="population-title">
+        <div class="population-overview">
+          <div class="population-heading"><h2 id="population-title">种群动态</h2><span id="population-period">本轮模拟</span></div>
+          <dl class="population-totals">
+            <div><dt>在世个体</dt><dd id="living">—</dd></div>
+            <div><dt>累计出生</dt><dd id="births">—</dd></div>
+            <div><dt>累计死亡</dt><dd id="deaths">—</dd></div>
+          </dl>
+        </div>
+        <div class="population-plot">
+          <div class="plot-legend">
+            <span class="legend-grazer">苔叶兽 <b id="grazer-count">—</b></span>
+            <span class="legend-hunter">琥脊兽 <b id="hunter-count">—</b></span>
+          </div>
+          <canvas id="population-chart" role="img" aria-label="两种生物的种群变化"></canvas>
+        </div>
+      </section>
+      <footer class="footer"><span>生命之境 · 生态沙盒</span><span>简化的游戏演化模型</span></footer>
+    </main>
+
+    <dialog id="new-dialog" aria-labelledby="new-title">
+      <form id="new-form">
+        <h2 id="new-title">生成新世界</h2>
+        <p>相同的种子会生成同一片群岛和初始种群。创建后会替换当前世界，已保存的进度仍可读取。</p>
+        <label for="seed-input">世界种子</label>
+        <div class="seed-row">
+          <input id="seed-input" type="number" inputmode="numeric" min="1" max="999999999" step="1" required>
+          <button class="button" id="random-seed" type="button">随机</button>
+        </div>
+        <div class="dialog-actions">
+          <button class="button" id="cancel-new" type="button">取消</button>
+          <button class="button gold-button" type="submit">生成群岛</button>
+        </div>
+      </form>
+    </dialog>
+    <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

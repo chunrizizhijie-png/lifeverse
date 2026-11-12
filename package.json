@@ -1,0 +1,21 @@
+{
+  "name": "lifeverse",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.25.0",
+  "engines": { "node": ">=22.18.0" },
+  "scripts": {
+    "dev": "vite",
+    "test": "node --test tests/*.test.ts",
+    "check": "tsc --noEmit",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": { "three": "0.187.0" },
+  "devDependencies": {
+    "@types/three": "0.187.0",
+    "typescript": "5.9.3",
+    "vite": "7.3.8"
+  }
+}
