@@ -30,7 +30,7 @@ port.onmessage = (event: MessageEvent<Command>) => {
       if (!playing) world.step();
       break;
     case 'gift':
-      send({ type: 'notice', message: world.gift(command.id, command.gift) });
+      send({ type: 'notice', message: world.gift(command.id, command.gift), giftId: command.id });
       break;
     case 'track':
       world.track(command.id);
@@ -55,10 +55,13 @@ port.onmessage = (event: MessageEvent<Command>) => {
       return;
     case 'load':
       try {
+        const legacy = !!command.save && typeof command.save === 'object' && 'version' in command.save && command.save.version === 1;
         world = World.restore(command.save);
         playing = false;
         accumulated = 0;
-        send({ type: 'notice', message: '已读取存档。世界时间已暂停。' });
+        send({ type: 'notice', message: legacy
+          ? '已迁移旧存档并暂停。原有生物已保留，新建世界可体验五种初始生物。'
+          : '已读取存档。世界时间已暂停。' });
       } catch (error) {
         send({ type: 'notice', message: (error as Error).message });
         return;
@@ -74,7 +77,7 @@ setInterval(() => {
   lastTime = now;
   if (!playing) return;
   accumulated += elapsed * speed;
-  const count = Math.min(12, Math.floor(accumulated / tickMilliseconds));
+  const count = Math.min(60, Math.floor(accumulated / tickMilliseconds));
   if (count === 0) return;
   accumulated -= count * tickMilliseconds;
   for (let i = 0; i < count; i++) world.step();

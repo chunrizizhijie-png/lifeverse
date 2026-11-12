@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { clamp, Terrain } from '../sim/terrain.ts';
-import { MAX_POPULATION, ROLES } from '../sim/types.ts';
-import type { Creature, Frame, Role } from '../sim/types.ts';
+import { clamp, MAP_HALF, Terrain } from '../sim/terrain.ts';
+import { creatureName, MAX_POPULATION } from '../sim/types.ts';
+import type { Creature, Frame } from '../sim/types.ts';
 import { island } from './landscape.ts';
 import { model, modelMaterial, portraitModel, scaleFor, tintFor } from './models.ts';
 import { FlatView, drawFlatPortrait } from './flat-view.ts';
@@ -17,15 +17,15 @@ export interface MapView {
 function light(scene: THREE.Scene, shadows = false) {
   scene.add(new THREE.HemisphereLight('#fff2ce', '#6b846b', 1.72));
   const key = new THREE.DirectionalLight('#fff1ca', 2.28);
-  key.position.set(-27, 53, 26);
+  key.position.set(-27, 53, 26).multiplyScalar(shadows ? 1.6 : 1);
   if (shadows) {
     key.castShadow = true;
     key.shadow.mapSize.set(1536, 1536);
-    key.shadow.camera.left = -66;
-    key.shadow.camera.right = 66;
-    key.shadow.camera.top = 58;
-    key.shadow.camera.bottom = -55;
-    key.shadow.camera.far = 160;
+    key.shadow.camera.left = -MAP_HALF;
+    key.shadow.camera.right = MAP_HALF;
+    key.shadow.camera.top = MAP_HALF;
+    key.shadow.camera.bottom = -MAP_HALF;
+    key.shadow.camera.far = 230;
     key.shadow.bias = -0.0006;
     key.shadow.normalBias = 0.19;
   }
@@ -40,8 +40,7 @@ interface BodyBatch {
   detail: THREE.InstancedMesh;
 }
 
-const batchKey = (role: Role, tall: boolean) => role + String(tall);
-const tag = (creature: Creature) => `${ROLES[creature.role].name} · ${String(creature.id).padStart(3, '0')}`;
+const tag = (creature: Creature) => `${creatureName(creature.role, creature.form)} · ${String(creature.id).padStart(3, '0')}`;
 
 class IslandView implements MapView {
   private readonly scene = new THREE.Scene();
@@ -79,24 +78,12 @@ class IslandView implements MapView {
     this.controls.enableDamping = true;
     this.controls.dampingFactor = 0.14;
     this.controls.minZoom = 0.72;
-    this.controls.maxZoom = 3.1;
+    this.controls.maxZoom = 4.7;
     this.controls.minPolarAngle = 0.24;
     this.controls.maxPolarAngle = 1.29;
     this.controls.rotateSpeed = 0.60;
     this.controls.panSpeed = 0.64;
     this.reset();
-    for (const role of ['grazer', 'hunter'] as const) {
-      for (const tall of [false, true]) {
-        const parts = model(role, tall);
-        const skin = new THREE.InstancedMesh(parts.skin, modelMaterial(), MAX_POPULATION);
-        const detail = new THREE.InstancedMesh(parts.detail, modelMaterial(), MAX_POPULATION);
-        skin.frustumCulled = detail.frustumCulled = false;
-        skin.count = detail.count = 0;
-        skin.castShadow = true;
-        this.scene.add(skin, detail);
-        this.batches.set(batchKey(role, tall), { skin, detail });
-      }
-    }
     this.selectedRing = new THREE.Mesh(new THREE.RingGeometry(1.38, 1.54, 52).rotateX(-Math.PI / 2),
       new THREE.MeshBasicMaterial({ color: '#ffdf89', side: THREE.DoubleSide, depthTest: false, toneMapped: false }));
     this.selectedRing.renderOrder = 4;
@@ -129,7 +116,7 @@ class IslandView implements MapView {
     this.width = Math.max(this.host.clientWidth, 1);
     this.height = Math.max(this.host.clientHeight, 1);
     const aspect = this.width / this.height;
-    const extent = Math.max(65, 108 / aspect);
+    const extent = Math.max(113, 186 / aspect);
     this.camera.left = -extent * aspect / 2;
     this.camera.right = extent * aspect / 2;
     this.camera.top = extent / 2;
@@ -139,7 +126,7 @@ class IslandView implements MapView {
   }
 
   reset() {
-    this.camera.position.set(75, 71, 94);
+    this.camera.position.set(112, 106, 141);
     this.camera.zoom = 1;
     this.camera.updateProjectionMatrix();
     this.controls.target.set(0, 4.4, 1.2);
@@ -178,6 +165,24 @@ class IslandView implements MapView {
     return { x: (this.scratch.x + 1) * this.width / 2, y: (1 - this.scratch.y) * this.height / 2 };
   }
 
+  private batchFor(creature: Creature) {
+    const tall = creature.genes.crest > 0.49;
+    const key = `${creature.role}/${tall}/${creature.form}`;
+    const existing = this.batches.get(key);
+    if (existing) return existing;
+
+    const parts = model(creature.role, tall, creature.form);
+    const skin = new THREE.InstancedMesh(parts.skin, modelMaterial(), MAX_POPULATION);
+    const detail = new THREE.InstancedMesh(parts.detail, modelMaterial(), MAX_POPULATION);
+    skin.frustumCulled = detail.frustumCulled = false;
+    skin.count = detail.count = 0;
+    skin.castShadow = true;
+    this.scene.add(skin, detail);
+    const batch = { skin, detail };
+    this.batches.set(key, batch);
+    return batch;
+  }
+
   private draw(time: number) {
     const frame = this.frame;
     const terrain = this.terrain;
@@ -194,9 +199,9 @@ class IslandView implements MapView {
       pose.x += (c.x - pose.x) * 0.16;
       pose.z += (c.z - pose.z) * 0.16;
       this.poses.set(c.id, pose);
-      const height = terrain.height(pose.x, pose.z);
+      const height = Math.max(0.04, terrain.height(pose.x, pose.z));
       const scale = scaleFor(c);
-      const batch = this.batches.get(batchKey(c.role, c.genes.crest > 0.49))!;
+      const batch = this.batchFor(c);
       const index = batch.skin.count++;
       batch.detail.count++;
       const bob = frame.playing ? Math.sin(time * 9 + c.id * 2.3) * 0.055 : 0;
@@ -222,6 +227,7 @@ class IslandView implements MapView {
       }
     }
     for (const { skin, detail } of this.batches.values()) {
+      if (!skin.count) continue;
       skin.instanceMatrix.needsUpdate = detail.instanceMatrix.needsUpdate = true;
       if (skin.instanceColor) skin.instanceColor.needsUpdate = true;
     }

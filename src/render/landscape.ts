@@ -3,7 +3,7 @@ import { clamp, hash, MAP_HALF, noise } from '../sim/terrain.ts';
 import type { Habitat, Terrain } from '../sim/terrain.ts';
 
 export const habitatColors: Record<Habitat, string> = {
-  sea: '#1b514d', shore: '#b8a578', meadow: '#77914f', woodland: '#536c40', ridge: '#8f8e74',
+  sea: '#1b514d', shallows: '#528577', shore: '#b8a578', meadow: '#77914f', woodland: '#536c40', ridge: '#8f8e74',
 };
 const shade = new THREE.Color('#42443a');
 const sunlit = new THREE.Color('#c9bd89');
@@ -51,6 +51,7 @@ function water(terrain: Terrain) {
   const material = new THREE.ShaderMaterial({
     uniforms: {
       terrainDepth: { value: depth },
+      mapHalf: { value: MAP_HALF },
       time: { value: 0 },
       deep: { value: new THREE.Color('#164944') },
       shallows: { value: new THREE.Color('#528577') },
@@ -66,12 +67,13 @@ function water(terrain: Terrain) {
     fragmentShader: `
       uniform sampler2D terrainDepth;
       uniform vec3 deep, shallows, surf;
-      uniform float time;
+      uniform float time, mapHalf;
       varying vec2 world;
       void main() {
-        vec2 uv = world / 126. + .5;
+        vec2 uv = world / (mapHalf * 2.) + .5;
         float d = 11.0 - texture2D(terrainDepth, uv).r * 36.0;
-        if (abs(world.x) > 62.9 || abs(world.y) > 62.9) d = 11.0;
+        float edge = max(abs(world.x), abs(world.y));
+        d = mix(d, 11.0, smoothstep(mapHalf - 18., mapHalf, edge));
         float a = sin(world.x * 1.57 + world.y * 1.24 + time * .55);
         float b = sin(world.x * .28 - world.y * .68 + a * .85 - time * .22);
         float c = sin(world.x * .39 + world.y * 1.83 + b * 1.11 + time * .41);
@@ -110,9 +112,9 @@ function scatter(terrain: Terrain) {
   const herbs: Planting[] = [];
   const crown = ['#416940', '#4d7648', '#6d8950', '#365b42', '#71894f', '#628450', '#809b5b'];
   const stone = ['#777f6e', '#a19a7d', '#77786c', '#958f77'];
-  for (let i = 0; i < 5200; i++) {
-    const x = (hash(i, 125, terrain.seed) - 0.5) * 112;
-    const z = (hash(i, 219, terrain.seed) - 0.5) * 88;
+  for (let i = 0; i < 12800; i++) {
+    const x = (hash(i, 125, terrain.seed) - 0.5) * 2 * MAP_HALF;
+    const z = (hash(i, 219, terrain.seed) - 0.5) * 2 * MAP_HALF;
     const y = terrain.height(x, z);
     if (y < 0.7) continue;
     const biome = terrain.habitat(x, z);
@@ -121,22 +123,22 @@ function scatter(terrain: Terrain) {
     const trait = hash(i, 141, terrain.seed);
     const variety = hash(i, 812, terrain.seed);
     const inClearing = ((x - 8) / 7) ** 2 + ((z - 13) / 6) ** 2 < 1;
-    if (biome === 'woodland' && tall.length < 630 && slope < 2.9 && !inClearing
+    if (biome === 'woodland' && tall.length < 1100 && slope < 2.9 && !inClearing
       && trait < 0.68 && noise(x * 0.17, z * 0.17, terrain.seed + 68) > 0.32) {
       tall.push({ x, y, z, spin, scale: 0.53 + variety ** 1.4 * 1.20,
         color: crown[Math.floor(variety * crown.length)] });
       continue;
     }
-    if ((biome === 'ridge' || (slope > 1.25 && y < 3.7)) && rocks.length < 290 && trait < 0.64) {
+    if ((biome === 'ridge' || (slope > 1.25 && y < 3.7)) && rocks.length < 470 && trait < 0.64) {
       rocks.push({ x, y, z, spin, scale: 0.33 + 1.03 * variety ** 1.2,
         color: stone[Math.floor(variety * stone.length)] });
       continue;
     }
-    if (y > 1.2 && biome !== 'ridge' && shrubs.length < 530 && trait < 0.69) {
+    if (y > 1.2 && biome !== 'ridge' && shrubs.length < 890 && trait < 0.69) {
       shrubs.push({ x, y, z, spin, scale: 0.22 + variety * 0.59, color: crown[Math.floor(variety * crown.length)] });
       continue;
     }
-    if (herbs.length < 660 && slope < 2.1) {
+    if (herbs.length < 1000 && slope < 2.1) {
       herbs.push({ x, y, z, spin, scale: 0.14 + variety * 0.37, color: trait > 0.78 ? '#bfaa5e' : '#95a96b' });
     }
   }

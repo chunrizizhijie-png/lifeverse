@@ -1,10 +1,11 @@
 import { clamp, hash, MAP_HALF, Terrain } from '../sim/terrain.ts';
-import { ROLES } from '../sim/types.ts';
+import { creatureName, ROLES } from '../sim/types.ts';
 import type { Creature, Frame } from '../sim/types.ts';
+import { MATURE_AGE } from '../sim/world.ts';
 import type { MapView } from './view.ts';
 
 const palette = {
-  sea: [33, 77, 68], shore: [183, 163, 115], meadow: [110, 137, 75],
+  sea: [33, 77, 68], shallows: [70, 134, 121], shore: [183, 163, 115], meadow: [110, 137, 75],
   woodland: [73, 108, 67], ridge: [143, 141, 116],
 };
 
@@ -86,7 +87,7 @@ export class FlatView implements MapView {
   }
 
   select(id: number | null) { this.focus = id; this.draw(); }
-  zoom(factor: number) { this.scale = clamp(this.scale * factor, 0.7, 3); this.draw(); }
+  zoom(factor: number) { this.scale = clamp(this.scale * factor, 0.7, 4.5); this.draw(); }
   reset() { this.scale = 1; this.angle = -0.20; this.draw(); }
 
   private draw() {
@@ -122,8 +123,8 @@ export class FlatView implements MapView {
       const y = h / 2 + (creature.x * s + creature.z * c) * unit * 0.82;
       this.hits.push({ id: creature.id, x, y });
       ctx.fillStyle = ROLES[creature.role].color;
-      ctx.strokeStyle = '#172d23';
-      ctx.lineWidth = 1.2;
+      ctx.strokeStyle = creature.form === 'wetland' ? '#b2ebda' : creature.form === 'dryland' ? '#f4cc8f' : '#172d23';
+      ctx.lineWidth = creature.form === 'ancestral' ? 1.2 : 1.5;
       ctx.beginPath();
       ctx.ellipse(x, y, 3 + creature.genes.size * this.scale, 2.4 + this.scale, creature.angle + this.angle, 0, Math.PI * 2);
       ctx.fill();
@@ -135,7 +136,7 @@ export class FlatView implements MapView {
       ctx.arc(x, y, 9, 0, Math.PI * 2);
       ctx.stroke();
       this.label.hidden = false;
-      this.label.textContent = `${ROLES[creature.role].name} · ${String(creature.id).padStart(3, '0')}`;
+      this.label.textContent = `${creatureName(creature.role, creature.form)} · ${String(creature.id).padStart(3, '0')}`;
       this.label.style.left = `${x}px`;
       this.label.style.top = `${y - 13}px`;
     }
@@ -154,21 +155,51 @@ export function drawFlatPortrait(host: HTMLElement, creature?: Creature) {
   const ctx = canvas.getContext('2d')!;
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   if (!creature) return;
-  const h = creature.genes.hue;
+  const { role, form, genes, age } = creature;
+  const h = genes.hue;
+  const accent = ROLES[role].color;
   const ellipse = (x: number, y: number, a: number, b: number, color: string, angle = 0) => {
     ctx.fillStyle = color;
     ctx.beginPath();
     ctx.ellipse(x, y, a, b, angle, 0, Math.PI * 2);
     ctx.fill();
   };
+  const spike = (x: number, y: number, tipX: number, tipY: number, width: number, color: string) => {
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.moveTo(x - width, y);
+    ctx.lineTo(tipX, tipY);
+    ctx.lineTo(x + width, y);
+    ctx.closePath();
+    ctx.fill();
+  };
+  const maturity = Math.min(1, age / MATURE_AGE);
+  const scale = (0.76 + 0.24 * maturity) * (0.85 + 0.15 * genes.size);
+  ctx.save();
+  ctx.translate(180, 128);
+  ctx.scale(scale * (role === 'stalker' ? 1.14 : 1), scale * (role === 'wader' ? 0.82 : 1));
+  ctx.translate(-180, -128);
   ellipse(182, 136, 74, 10, '#101c18a8');
   ellipse(128, 105, 13, 27, `hsl(${h} 28% 34%)`, 0.3);
   ellipse(181, 109, 12, 28, `hsl(${h} 28% 37%)`);
   ellipse(126, 83, 30, 8, `hsl(${h} 31% 48%)`, 0.32);
   ellipse(163, 91, 52, 36, `hsl(${h} 33% 48%)`, -0.04);
+  const fin = role === 'grazer' || role === 'wader';
   for (let i = 0; i < 3; i++) {
-    ellipse(149 + i * 17, 57, 8, 21 * (0.7 + creature.genes.crest * 0.5), i % 2 ? '#9bad65' : '#b6ba6b', -0.58);
+    const x = 141 + i * 17;
+    const height = 17 + genes.crest * 12;
+    if (fin) ellipse(x, 57, 8, height, accent, -0.58);
+    else spike(x, 64, x - 10, 62 - height, 8, accent);
   }
+  if (role === 'wader' || form === 'wetland') {
+    ellipse(103, 80, 20, 8, '#66bfae', 0.31);
+    ellipse(155, 111, 17, 7, '#87d9ca', -0.42);
+  } else if (form === 'dryland') {
+    ellipse(150, 81, 16, 9, '#cfa76f', -0.36);
+    ellipse(174, 86, 15, 8, '#e1b978', -0.36);
+  }
+  if (role === 'browser') spike(199, 55, 186, 18, 13, '#ead093');
+  if (role === 'stalker') spike(201, 48, 197, 12, 14, '#ad91c4');
   ellipse(202, 69, 36, 33, `hsl(${h} 36% 59%)`, 0.05);
   ellipse(219, 86, 25, 17, `hsl(${h} 35% 65%)`);
   ellipse(223, 63, 9, 11, '#2e3324');
@@ -176,4 +207,5 @@ export function drawFlatPortrait(host: HTMLElement, creature?: Creature) {
   ellipse(226, 64, 3, 6, '#23241c');
   ellipse(225, 60, 2.2, 2.2, '#fff4c6');
   ellipse(240, 82, 3.5, 2.4, '#354737');
+  ctx.restore();
 }

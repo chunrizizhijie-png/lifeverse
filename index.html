@@ -62,9 +62,11 @@
               <button class="step-button" id="step" type="button" aria-label="推进一步" title="暂停时推进一步" disabled><span class="step-glyph" aria-hidden="true"></span></button>
             </div>
             <div class="speed-controls" role="group" aria-label="模拟速度">
-              <button type="button" data-speed="1" aria-pressed="true">1×</button>
-              <button type="button" data-speed="4" aria-pressed="false">4×</button>
-              <button type="button" data-speed="12" aria-pressed="false">12×</button>
+              <span class="speed-label" aria-hidden="true">时间速度</span>
+              <button type="button" data-speed="1" aria-label="正常速度" aria-pressed="true" title="正常速度">1×</button>
+              <button type="button" data-speed="4" aria-label="4 倍速" aria-pressed="false" title="4 倍速">4×</button>
+              <button type="button" data-speed="12" aria-label="12 倍速" aria-pressed="false" title="12 倍速">12×</button>
+              <button type="button" data-speed="48" aria-label="48 倍速" aria-pressed="false" title="48 倍速，用于观察多代演化">48×</button>
             </div>
             <div class="timebar-status"><span class="status-dot" id="run-dot"></span><span id="run-status">演化中</span></div>
           </div>
@@ -96,21 +98,24 @@
               <div class="meter"><span>能量</span><progress id="energy" value="0" max="100" aria-label="能量"></progress><output id="energy-value">—</output></div>
               <div class="meter"><span>成熟度</span><progress id="maturity" value="0" max="100" aria-label="成熟度"></progress><output id="maturity-value">—</output></div>
             </div>
-            <dl class="traits">
+            <dl class="traits individual-traits" aria-label="遗传性状">
               <div><dt>体型</dt><dd id="trait-size">—</dd></div>
               <div><dt>移速</dt><dd id="trait-speed">—</dd></div>
               <div><dt>适温</dt><dd id="trait-comfort">—</dd></div>
+              <div><dt title="这个体遗传的适宜湿度">适湿</dt><dd id="trait-moisture">—</dd></div>
             </dl>
+            <p class="local-climate" id="local-climate" hidden></p>
             <div class="gift-section">
               <div class="gift-heading">
                 <h3>造物主恩赐</h3><button class="track" id="track" type="button" disabled><span aria-hidden="true">◇</span> 追踪血脉</button>
               </div>
               <div class="gift-buttons">
-                <button type="button" data-gift="grow" title="将幼体的成熟进程提前最多 200 世界分钟" disabled><span aria-hidden="true">✧</span> 促生</button>
-                <button type="button" data-gift="restore" title="恢复最多 35 点能量" disabled><span aria-hidden="true">＋</span> 恢复</button>
-                <button type="button" data-gift="adapt" title="将可遗传适温向当前气温调整最多 3°C" disabled><span aria-hidden="true">↝</span> 调适</button>
+                <button type="button" data-gift="grow" title="让幼体立即成熟，补充能量并解除繁殖冷却" disabled><span aria-hidden="true">✧</span> 促生</button>
+                <button type="button" data-gift="restore" title="将能量补满" disabled><span aria-hidden="true">＋</span> 恢复</button>
+                <button type="button" data-gift="adapt" title="使可遗传的适温和适湿向当地气候靠拢" disabled><span aria-hidden="true">↝</span> 调适</button>
               </div>
-              <p class="gift-note">促生与恢复作用于个体。调适可由后代继承。</p>
+              <p class="gift-note">促生让幼体立刻成熟，恢复补满能量，调适改变可遗传的适温和适湿。</p>
+              <p class="gift-result" id="gift-result" role="status" hidden></p>
             </div>
           </section>
 
@@ -121,7 +126,7 @@
               <dl class="traits lineage-totals">
                 <div><dt>累计后代</dt><dd id="descendants">0</dd></div>
                 <div><dt>在世后代</dt><dd id="descendants-alive">0</dd></div>
-                <div><dt>最深世代</dt><dd id="descendants-generation">—</dd></div>
+                <div><dt>血脉最高世代</dt><dd id="descendants-generation">—</dd></div>
               </dl>
               <h3 class="lineage-list-title">血脉记录</h3>
               <ul class="lineage-list" id="lineage-list"></ul>
@@ -129,7 +134,7 @@
           </section>
 
           <section class="tab-panel" id="climate-panel" role="tabpanel" aria-labelledby="climate-tab" hidden>
-            <div class="section-intro"><h2>世界环境</h2><p>气候改变后，所有个体会在下一步模拟中受到影响。</p></div>
+            <div class="section-intro"><h2>世界环境</h2><p>长时间维持一种气候，可在血脉里观察适湿的变化。用 48× 倍速推进多代。</p></div>
             <div class="climate-controls">
               <label class="slider-label" for="set-temperature"><strong>地表气温</strong><output id="set-temperature-value">22°C</output></label>
               <input id="set-temperature" type="range" min="5" max="38" value="22">
@@ -138,7 +143,7 @@
               <label class="slider-label" for="set-rain"><strong>降水强度</strong><output id="set-rain-value">64%</output></label>
               <input id="set-rain" type="range" min="10" max="100" value="64">
               <div class="range-ends"><span>干旱</span><span>丰沛</span></div>
-              <p>降水增加时，苔叶兽可采食的资源恢复得更快。</p>
+              <p>降水影响资源再生和当地湿度。适湿低的个体更适合干地，适湿高的个体更适合湿地，偏离适湿会增加能耗。<br>近期降水 <strong id="rain-trend">64%</strong></p>
               <button class="button" id="reset-climate" type="button">恢复初始气候</button>
             </div>
           </section>
@@ -153,13 +158,18 @@
             <div><dt>累计出生</dt><dd id="births">—</dd></div>
             <div><dt>累计死亡</dt><dd id="deaths">—</dd></div>
           </dl>
+          <div class="form-counts" role="group" aria-label="在世适应型">
+            <span>湿地型 <b id="wetland-count">—</b></span>
+            <span>旱地型 <b id="dryland-count">—</b></span>
+          </div>
+          <details class="food-web">
+            <summary>查看食物关系</summary>
+            <ul id="food-web-list"></ul>
+          </details>
         </div>
         <div class="population-plot">
-          <div class="plot-legend">
-            <span class="legend-grazer">苔叶兽 <b id="grazer-count">—</b></span>
-            <span class="legend-hunter">琥脊兽 <b id="hunter-count">—</b></span>
-          </div>
-          <canvas id="population-chart" role="img" aria-label="两种生物的种群变化"></canvas>
+          <div class="plot-legend" id="population-legend" role="group" aria-label="在世种群"></div>
+          <canvas id="population-chart" role="img" aria-label="各类生物的种群变化"></canvas>
         </div>
       </section>
       <footer class="footer"><span>生命之境 · 生态沙盒</span><span>简化的游戏演化模型</span></footer>
@@ -168,7 +178,7 @@
     <dialog id="new-dialog" aria-labelledby="new-title">
       <form id="new-form">
         <h2 id="new-title">生成新世界</h2>
-        <p>相同的种子会生成同一片群岛和初始种群。创建后会替换当前世界，已保存的进度仍可读取。</p>
+        <p>相同的种子会生成同一片群岛和五类初始生物。创建后会替换当前世界，已保存的进度仍可读取。</p>
         <label for="seed-input">世界种子</label>
         <div class="seed-row">
           <input id="seed-input" type="number" inputmode="numeric" min="1" max="999999999" step="1" required>

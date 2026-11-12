@@ -1,8 +1,11 @@
-export const MAP_HALF = 63;
-export const GRID_SIZE = 42;
+export const LEGACY_MAP_HALF = 63;
+export const LEGACY_GRID_SIZE = 42;
+export const MAP_HALF = 99;
+export const GRID_SIZE = 66;
 export const CELL_WIDTH = 2 * MAP_HALF / GRID_SIZE;
 export const LAND_HEIGHT = 0.55;
-const HEIGHT_RESOLUTION = 126;
+const HEIGHT_RESOLUTION = 2 * MAP_HALF;
+const SHALLOW_DEPTH = -0.95;
 
 export const clamp = (v: number, low: number, high: number) => Math.min(high, Math.max(low, v));
 const mix = (a: number, b: number, t: number) => a + (b - a) * t;
@@ -53,7 +56,30 @@ function terrainShape(x: number, z: number, seed: number) {
   return Math.max(0, coast * 3.8 + (mountains + relief + 1.6) * smooth(clamp(coast * 4, 0, 1)) * valley);
 }
 
-export type Habitat = 'sea' | 'shore' | 'meadow' | 'woodland' | 'ridge';
+function outerTerrain(x: number, z: number, seed: number) {
+  const drift = (noise(4, 8, seed + 74) - 0.5) * 8;
+  const east = ellipse(x, z, 50, -17 + drift, 36, 25);
+  const northwest = ellipse(x + z * 0.18, z, -53, -38 + drift, 31, 24);
+  const south = Math.max(
+    ellipse(x, z, 17, 53 - drift, 27, 22),
+    ellipse(x, z, -21, 58 + drift, 16, 12) - 0.06,
+  );
+  const islands = Math.max(
+    ellipse(x, z, 66, 38, 17, 12) - 0.09,
+    ellipse(x, z, -73, 27, 16, 18) - 0.08,
+  );
+  const coast = Math.max(east, northwest, south, islands)
+    + (noise(x * 0.105, z * 0.105, seed + 61) - 0.5) * 0.24
+    + (noise(x * 0.26, z * 0.26, seed + 84) - 0.5) * 0.10;
+  if (coast < 0) return Math.max(-11, coast * 7.5);
+
+  const mountains = 17 * Math.exp(-((x + 45) ** 2 / 260 + (z + 43) ** 2 / 195))
+    + 12 * Math.exp(-((x - 13) ** 2 / 190 + (z - 57) ** 2 / 180));
+  const relief = 1.9 + 4 * noise(x * 0.12, z * 0.12, seed + 96);
+  return coast * 2.1 + (mountains + relief) * smooth(clamp(coast * 3.5, 0, 1));
+}
+
+export type Habitat = 'sea' | 'shallows' | 'shore' | 'meadow' | 'woodland' | 'ridge';
 
 export interface Cell {
   x: number;
@@ -71,7 +97,11 @@ export class Terrain {
     this.seed = seed;
     for (let row = 0; row <= HEIGHT_RESOLUTION; row++) {
       for (let col = 0; col <= HEIGHT_RESOLUTION; col++) {
-        this.heights[row * (HEIGHT_RESOLUTION + 1) + col] = terrainShape(col - MAP_HALF, row - MAP_HALF, seed);
+        const x = col - MAP_HALF;
+        const z = row - MAP_HALF;
+        this.heights[row * (HEIGHT_RESOLUTION + 1) + col] = Math.max(
+          terrainShape(x, z, seed), outerTerrain(x, z, seed),
+        );
       }
     }
     for (let row = 0; row < GRID_SIZE; row++) {
@@ -79,7 +109,7 @@ export class Terrain {
         const x = (col + 0.5) * CELL_WIDTH - MAP_HALF;
         const z = (row + 0.5) * CELL_WIDTH - MAP_HALF;
         const habitat = this.habitat(x, z);
-        const capacity = { sea: 0, shore: 14, meadow: 38, woodland: 49, ridge: 16 }[habitat];
+        const capacity = { sea: 0, shallows: 14, shore: 18, meadow: 38, woodland: 49, ridge: 16 }[habitat];
         if (this.isLand(x, z)) this.land.push(this.cells.length);
         this.cells.push({ x, z, capacity: capacity * (0.78 + hash(col, row, seed) * 0.42) });
       }
@@ -101,12 +131,25 @@ export class Terrain {
     return Math.abs(x) < MAP_HALF && Math.abs(z) < MAP_HALF && this.height(x, z) >= LAND_HEIGHT;
   }
 
+  isShallow(x: number, z: number) {
+    if (Math.abs(x) >= MAP_HALF || Math.abs(z) >= MAP_HALF) return false;
+    const height = this.height(x, z);
+    return height >= SHALLOW_DEPTH && height < LAND_HEIGHT;
+  }
+
   habitat(x: number, z: number): Habitat {
     const h = this.height(x, z);
-    if (h <= 0) return 'sea';
+    if (h < SHALLOW_DEPTH) return 'sea';
+    if (h < LAND_HEIGHT) return 'shallows';
     if (h < 1.45) return 'shore';
     if (h > 12 + 4 * noise(x * 0.09, z * 0.09, this.seed + 72)) return 'ridge';
     return noise(x * 0.075, z * 0.075, this.seed + 39) > 0.48 ? 'woodland' : 'meadow';
+  }
+
+  moistureOffset(x: number, z: number) {
+    const habitat = this.habitat(x, z);
+    const local = { sea: 22, shallows: 22, shore: 16, meadow: -3, woodland: 8, ridge: -20 }[habitat];
+    return local + (noise(x * 0.065, z * 0.065, this.seed + 133) - 0.5) * 8;
   }
 
   cellAt(x: number, z: number) {
