@@ -1,33 +1,39 @@
 import * as THREE from 'three';
-import { clamp, hash, MAP_HALF, noise } from '../sim/terrain.ts';
+import { clamp, hash, noise } from '../sim/terrain.ts';
 import type { Habitat, Terrain } from '../sim/terrain.ts';
+import type { Biome } from '../sim/types.ts';
+import { seamColor, terrainColors } from './terrain-colors.ts';
 
-export const habitatColors: Record<Habitat, string> = {
-  sea: '#1b514d', shore: '#b8a578', meadow: '#77914f', woodland: '#536c40', ridge: '#8f8e74',
-};
 const shade = new THREE.Color('#42443a');
 const sunlit = new THREE.Color('#c9bd89');
+const palettes = Object.fromEntries(Object.entries(terrainColors).map(([biome, colors]) => [
+  biome, Object.fromEntries(Object.entries(colors).map(([habitat, hex]) => [habitat, new THREE.Color(hex)])),
+])) as Record<Biome, Record<Habitat, THREE.Color>>;
 
 function ground(terrain: Terrain) {
-  const resolution = Math.sqrt(terrain.heights.length) - 1;
-  const geometry = new THREE.PlaneGeometry(MAP_HALF * 2, MAP_HALF * 2, resolution, resolution);
+  const width = terrain.mapHalf * 2;
+  const resolution = terrain.tiles.length === 1 ? width : width / 2;
+  const geometry = new THREE.PlaneGeometry(width, width, resolution, resolution);
   geometry.rotateX(-Math.PI / 2);
   const positions = geometry.attributes.position;
   const colors = new Float32Array(positions.count * 3);
-  const palette = Object.fromEntries(Object.entries(habitatColors).map(([key, hex]) => [key, new THREE.Color(hex)]));
   const tint = new THREE.Color();
   for (let i = 0; i < positions.count; i++) {
     const x = positions.getX(i);
     const z = positions.getZ(i);
-    const height = terrain.heights[i];
+    const height = terrain.height(x, z);
     positions.setY(i, height);
-    const biome = terrain.habitat(x, z);
+    const region = terrain.tileAt(x, z);
+    const habitat = terrain.habitat(x, z, region);
+    const palette = palettes[terrain.tiles[region].biome];
     const contour = noise(x * 0.22, z * 0.22, terrain.seed + 581);
     const mottled = noise(x * 0.64, z * 0.64, terrain.seed + 717);
-    tint.copy(palette[biome]);
-    if (biome === 'shore') tint.lerp(palette.meadow, clamp((height - 0.52) / 1.55, 0, 0.62));
-    if (biome === 'meadow') tint.lerp(palette.woodland, (1 - contour) * 0.32);
-    if (biome === 'ridge') tint.lerp(shade, Math.max(0, 0.8 - contour) * 0.60);
+    tint.copy(palette[habitat]);
+    const seam = seamColor(terrain, x, z, region);
+    if (seam) tint.lerp(palettes[seam.biome][habitat], seam.weight);
+    if (habitat === 'shore') tint.lerp(palette.meadow, clamp((height - 0.52) / 1.55, 0, 0.62));
+    if (habitat === 'meadow') tint.lerp(palette.woodland, (1 - contour) * 0.32);
+    if (habitat === 'ridge') tint.lerp(shade, Math.max(0, 0.8 - contour) * 0.60);
     tint.lerp(mottled > 0.5 ? sunlit : shade, Math.abs(mottled - 0.5) * 0.30);
     tint.toArray(colors, i * 3);
   }
@@ -47,10 +53,12 @@ function water(terrain: Terrain) {
   depth.magFilter = THREE.LinearFilter;
   depth.minFilter = THREE.LinearFilter;
   depth.needsUpdate = true;
-  const geometry = new THREE.PlaneGeometry(640, 640).rotateX(-Math.PI / 2);
+  const oceanWidth = Math.max(640, terrain.mapHalf * 6);
+  const geometry = new THREE.PlaneGeometry(oceanWidth, oceanWidth).rotateX(-Math.PI / 2);
   const material = new THREE.ShaderMaterial({
     uniforms: {
       terrainDepth: { value: depth },
+      mapHalf: { value: terrain.mapHalf },
       time: { value: 0 },
       deep: { value: new THREE.Color('#164944') },
       shallows: { value: new THREE.Color('#528577') },
@@ -66,12 +74,13 @@ function water(terrain: Terrain) {
     fragmentShader: `
       uniform sampler2D terrainDepth;
       uniform vec3 deep, shallows, surf;
-      uniform float time;
+      uniform float time, mapHalf;
       varying vec2 world;
       void main() {
-        vec2 uv = world / 126. + .5;
+        vec2 uv = world / (mapHalf * 2.) + .5;
         float d = 11.0 - texture2D(terrainDepth, uv).r * 36.0;
-        if (abs(world.x) > 62.9 || abs(world.y) > 62.9) d = 11.0;
+        float edge = max(abs(world.x), abs(world.y));
+        d = mix(d, 11.0, smoothstep(mapHalf - 18., mapHalf, edge));
         float a = sin(world.x * 1.57 + world.y * 1.24 + time * .55);
         float b = sin(world.x * .28 - world.y * .68 + a * .85 - time * .22);
         float c = sin(world.x * .39 + world.y * 1.83 + b * 1.11 + time * .41);
@@ -110,33 +119,37 @@ function scatter(terrain: Terrain) {
   const herbs: Planting[] = [];
   const crown = ['#416940', '#4d7648', '#6d8950', '#365b42', '#71894f', '#628450', '#809b5b'];
   const stone = ['#777f6e', '#a19a7d', '#77786c', '#958f77'];
-  for (let i = 0; i < 5200; i++) {
-    const x = (hash(i, 125, terrain.seed) - 0.5) * 112;
-    const z = (hash(i, 219, terrain.seed) - 0.5) * 88;
+  const density = terrain.tiles.length === 1 ? 1 : 3;
+  for (let i = 0; i < 12800 * density; i++) {
+    const x = (hash(i, 125, terrain.seed) - 0.5) * 2 * terrain.mapHalf;
+    const z = (hash(i, 219, terrain.seed) - 0.5) * 2 * terrain.mapHalf;
     const y = terrain.height(x, z);
     if (y < 0.7) continue;
-    const biome = terrain.habitat(x, z);
+    const region = terrain.tileAt(x, z);
+    const habitat = terrain.habitat(x, z, region);
+    const biome = terrain.tiles[region].biome;
+    const sparse = biome === 'desert' || biome === 'tundra';
     const slope = Math.abs(y - terrain.height(x + 1.4, z)) + Math.abs(y - terrain.height(x, z + 1.4));
     const spin = hash(i, 417, terrain.seed) * Math.PI * 2;
     const trait = hash(i, 141, terrain.seed);
     const variety = hash(i, 812, terrain.seed);
     const inClearing = ((x - 8) / 7) ** 2 + ((z - 13) / 6) ** 2 < 1;
-    if (biome === 'woodland' && tall.length < 630 && slope < 2.9 && !inClearing
-      && trait < 0.68 && noise(x * 0.17, z * 0.17, terrain.seed + 68) > 0.32) {
+    if (habitat === 'woodland' && tall.length < 1100 * density && slope < 2.9 && !inClearing
+      && trait < (sparse ? 0.09 : 0.68) && noise(x * 0.17, z * 0.17, terrain.seed + 68) > 0.32) {
       tall.push({ x, y, z, spin, scale: 0.53 + variety ** 1.4 * 1.20,
         color: crown[Math.floor(variety * crown.length)] });
       continue;
     }
-    if ((biome === 'ridge' || (slope > 1.25 && y < 3.7)) && rocks.length < 290 && trait < 0.64) {
+    if ((habitat === 'ridge' || (slope > 1.25 && y < 3.7)) && rocks.length < 470 * density && trait < 0.64) {
       rocks.push({ x, y, z, spin, scale: 0.33 + 1.03 * variety ** 1.2,
         color: stone[Math.floor(variety * stone.length)] });
       continue;
     }
-    if (y > 1.2 && biome !== 'ridge' && shrubs.length < 530 && trait < 0.69) {
+    if (y > 1.2 && habitat !== 'ridge' && shrubs.length < 890 * density && trait < (sparse ? 0.16 : 0.69)) {
       shrubs.push({ x, y, z, spin, scale: 0.22 + variety * 0.59, color: crown[Math.floor(variety * crown.length)] });
       continue;
     }
-    if (herbs.length < 660 && slope < 2.1) {
+    if (herbs.length < 1000 * density && slope < 2.1 && (!sparse || trait < 0.24)) {
       herbs.push({ x, y, z, spin, scale: 0.14 + variety * 0.37, color: trait > 0.78 ? '#bfaa5e' : '#95a96b' });
     }
   }
@@ -184,6 +197,7 @@ export function island(terrain: Terrain) {
       const materials = new Set<THREE.Material>();
       group.traverse(object => {
         if (!(object instanceof THREE.Mesh)) return;
+        if (object instanceof THREE.InstancedMesh) object.dispose();
         object.geometry.dispose();
         if (!Array.isArray(object.material)) materials.add(object.material);
       });

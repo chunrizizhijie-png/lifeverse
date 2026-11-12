@@ -1,5 +1,5 @@
-import { MINUTES_PER_TICK, ROLES } from '../sim/types.ts';
-import type { Census, Role } from '../sim/types.ts';
+import { MINUTES_PER_TICK, ROLE_KEYS, ROLES } from '../sim/types.ts';
+import type { Census } from '../sim/types.ts';
 
 function day(tick: number) {
   return Math.floor(tick * MINUTES_PER_TICK / 1440) + 1;
@@ -18,7 +18,8 @@ export function makeChart(canvas: HTMLCanvasElement) {
     const first = history.at(0)?.tick ?? 0;
     const last = history.at(-1)?.tick ?? 0;
     const end = Math.max(last, first + 30);
-    const max = Math.max(20, Math.ceil(Math.max(...history.map(row => Math.max(row.grazer, row.hunter))) / 20) * 20);
+    const peak = Math.max(0, ...history.flatMap(row => ROLE_KEYS.map(role => row[role])));
+    const max = Math.max(20, Math.ceil(peak / 20) * 20);
     const width = rect.width - 37;
     const top = 9;
     const base = rect.height - 17;
@@ -44,7 +45,8 @@ export function makeChart(canvas: HTMLCanvasElement) {
       ctx.textAlign = 'left';
     }
     if (!history.length) return;
-    for (const role of ['grazer', 'hunter'] as Role[]) {
+    for (const role of ROLE_KEYS) {
+      if (!history.some(sample => sample[role] > 0)) continue;
       ctx.beginPath();
       for (const [index, row] of history.entries()) {
         const x = atX(row.tick);
@@ -66,7 +68,8 @@ export function makeChart(canvas: HTMLCanvasElement) {
   new ResizeObserver(render).observe(canvas);
   return (samples: Census[], current: Census) => {
     history = samples.at(-1)?.tick === current.tick ? samples : [...samples, current];
-    canvas.setAttribute('aria-label', `种群变化。当前有 ${current.grazer} 只苔叶兽和 ${current.hunter} 只琥脊兽。`);
+    const counts = ROLE_KEYS.map(role => `${ROLES[role].name} ${current[role]} 只`);
+    canvas.setAttribute('aria-label', `种群变化。当前在世 ${counts.join('、')}。`);
     render();
   };
 }
