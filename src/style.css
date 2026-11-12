@@ -444,7 +444,7 @@ dialog label { display: block; font-size: 12px; margin-bottom: 7px; }
 }
 
 .traits-four { grid-template-columns: repeat(4, minmax(0, 1fr)); }
-.traits-four dd { font-size: 13px; }
+.traits-four dd { font-size: 13px; white-space: normal; overflow-wrap: anywhere; }
 .trait-ability {
   margin-top: 9px;
   padding: 6px 9px;
@@ -496,6 +496,7 @@ dialog label { display: block; font-size: 12px; margin-bottom: 7px; }
   color: #d7e3c9;
   font-size: 9px;
 }
+.plot-legend { flex-wrap: wrap; row-gap: 5px; }
 .plot-legend .legend-foot::before { background: #c8b88a; }
 .plot-legend .legend-webbed::before { background: #7ec4b6; }
 .plot-legend .legend-fin::before { background: #5ca4d8; }

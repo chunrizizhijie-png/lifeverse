@@ -105,6 +105,58 @@ test('存档可恢复随机状态，拒绝错误版本和异常数据', () => {
   assert.throws(() => World.restore({ ...snapshot, resources: [] }), /存档内容有误/);
 });
 
+test('旧版存档的个体和谱系可以补齐附肢数据', () => {
+  const original = new World();
+  original.track(1);
+  const snapshot = JSON.parse(JSON.stringify(original.save()));
+  for (const creature of snapshot.creatures) delete creature.genes.aquatic;
+  for (const record of snapshot.records) {
+    delete record.limb;
+    delete record.genes;
+  }
+  const restored = World.restore(snapshot);
+  assert.equal(restored.frame(false, 1).bloodline?.root, 1);
+  assert.ok(restored.creatures.every(creature => limbForm(creature.genes.aquatic) === 'foot'));
+  assert.ok([...restored.records.values()].every(record => record.limb === 'foot'));
+});
+
+test('暖湿世界的变异幼体始终出生在可通行地形，存档可读回', () => {
+  const world = new World(1);
+  world.setClimate({ temperature: 28, rain: 95 });
+  for (let tick = 1; tick <= 606; tick++) {
+    world.step();
+    assert.ok(world.creatures.every(creature =>
+      world.terrain.canTraverse(creature.x, creature.z, limbForm(creature.genes.aquatic))
+    ), `第 ${tick} 步出现无法通行的个体`);
+  }
+  const snapshot = world.save();
+  assert.deepEqual(World.restore(snapshot).save(), snapshot);
+});
+
+test('长期追踪的血脉达到档案上限时仍可读档和继续模拟', () => {
+  const world = new World(DEFAULT_SEED);
+  const founder = world.creatures.find(creature => creature.id === 30)!;
+  for (const record of world.records.values()) {
+    if (record.id !== founder.id) record.died = 0;
+  }
+  world.deaths = world.creatures.length - 1;
+  world.creatures = [founder];
+  world.track(founder.id);
+  world.setClimate({ temperature: 28, rain: 95 });
+  advance(world, 12800);
+
+  const before = world.frame(false, 1);
+  assert.ok((before.bloodline?.total ?? 0) > 2200);
+  assert.equal(world.records.size, 2200);
+  assert.equal(before.bloodline?.comparison?.ancestorId, founder.id);
+  assert.ok(before.branch.some(record => record.id === before.bloodline?.comparison?.descendantId));
+  const restored = World.restore(world.save());
+  assert.deepEqual(restored.frame(false, 1).bloodline, before.bloodline);
+  advance(world, 100);
+  advance(restored, 100);
+  assert.deepEqual(restored.save(), world.save());
+});
+
 test('不同附肢形态具有实际行动差异：涉水蹼可涉过陆行足无法进入的浅滩', () => {
   const world = new World(DEFAULT_SEED);
   // Find a shore coordinate right next to a shallows coordinate

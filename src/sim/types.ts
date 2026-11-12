@@ -145,6 +145,7 @@ export interface LineageComparison {
   descendantGenes: Genes;
   generationSpan: number;
   stageChain: LimbForm[];
+  chainComplete: boolean;
 }
 
 export interface Bloodline {

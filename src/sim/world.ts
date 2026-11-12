@@ -70,8 +70,9 @@ export class World {
       const { x: a, z: b } = this.terrain.cells[nearest];
       return (x - 8) ** 2 + (z - 13) ** 2 < (a - 8) ** 2 + (b - 13) ** 2 ? index : nearest;
     }, nursery[0]);
-    for (let i = 0; i < 45; i++) this.creatures.push(this.spawn('grazer', i === 0 ? first : this.pick(nursery)));
-    for (let i = 0; i < 8; i++) this.creatures.push(this.spawn('hunter', this.pick(nursery)));
+    // Nursery cells are land, which all founding forms can traverse.
+    for (let i = 0; i < 45; i++) this.creatures.push(this.spawn('grazer', i === 0 ? first : this.pick(nursery))!);
+    for (let i = 0; i < 8; i++) this.creatures.push(this.spawn('hunter', this.pick(nursery))!);
     this.sample();
   }
 
@@ -135,6 +136,7 @@ export class World {
           break;
         }
       }
+      if (!this.terrain.canTraverse(spawnX, spawnZ, limb)) return;
     }
     const creature: Creature = {
       id: this.nextId++,
@@ -323,9 +325,11 @@ export class World {
       const chance = (creature.role === 'grazer' ? 0.065 : 0.030) * (1 - pressure ** 3);
       if (creature.age >= MATURE_AGE && creature.cooldown === 0 && creature.energy >= threshold
         && pressure < 1 && this.random() < chance) {
+        const newborn = this.spawn(creature.role, this.terrain.cellAt(creature.x, creature.z), creature);
+        if (!newborn) continue;
         creature.energy -= 43;
         creature.cooldown = creature.role === 'grazer' ? 105 : 180;
-        young.push(this.spawn(creature.role, this.terrain.cellAt(creature.x, creature.z), creature));
+        young.push(newborn);
         this.births++;
       }
     }
@@ -341,9 +345,12 @@ export class World {
   }
 
   private prune() {
-    for (const [id, record] of this.records) {
-      if (this.records.size <= MAX_RECORDS) break;
-      if (record.died !== null && id !== this.bloodline?.root && !record.tracked) this.records.delete(id);
+    for (const keepTracked of [true, false]) {
+      for (const [id, record] of this.records) {
+        if (this.records.size <= MAX_RECORDS) return;
+        if (record.died === null || id === this.bloodline?.root || (keepTracked && record.tracked)) continue;
+        this.records.delete(id);
+      }
     }
   }
 
@@ -448,6 +455,7 @@ export class World {
       descendantGenes: { ...descendant.genes },
       generationSpan: descendant.generation - ancestor.generation,
       stageChain: chain,
+      chainComplete: path[0]?.id === ancestor.id,
     };
   }
 
@@ -459,15 +467,16 @@ export class World {
     for (const r of branch) forms[r.limb]++;
     const comparison = this.buildComparison(branch);
 
-    // Keep root, key evolutionary milestone representatives (first webbed, first fin), and recent records
+    // Keep the records used by the comparison cards, early forms, and recent descendants.
     let selectedBranch = branch.slice(-12);
     if (branch.length > 12) {
       const firstWebbed = branch.find(r => r.limb === 'webbed');
       const firstFin = branch.find(r => r.limb === 'fin');
-      const extras = [branch[0], firstWebbed, firstFin].filter(
-        (r): r is LineageRecord => !!r && !selectedBranch.some(s => s.id === r.id),
-      );
-      selectedBranch = [...extras, ...selectedBranch];
+      const shownIds = new Set(selectedBranch.map(record => record.id));
+      for (const id of [root, firstWebbed?.id, firstFin?.id, comparison?.descendantId]) {
+        if (id !== undefined) shownIds.add(id);
+      }
+      selectedBranch = branch.filter(record => shownIds.has(record.id));
     }
 
     return {

@@ -171,11 +171,15 @@ function refreshLineage(next: Frame) {
   const descendantRec = customDesc ?? defaultDesc ?? next.branch.at(-1);
 
   if (ancestorRec && descendantRec) {
-    const chainText = bloodline.comparison?.stageChain.map(l => LIMBS[l].name).join(' → ') ?? LIMBS[ancestorRec.limb].name;
+    const comparison = bloodline.comparison;
+    const chainText = customDesc
+      ? `${LIMBS[ancestorRec.limb].name} / ${LIMBS[customDesc.limb].name}`
+      : comparison?.stageChain.map(limb => LIMBS[limb].name).join(' → ') ?? LIMBS[ancestorRec.limb].name;
+    const chainLabel = customDesc ? '所选形态' : comparison?.chainComplete === false ? '可追溯片段' : '进化链';
     const formCounts = bloodline.forms
-      ? `（足 ${bloodline.forms.foot} · 蹼 ${bloodline.forms.webbed} · 鳍 ${bloodline.forms.fin}）`
+      ? `（档案中足 ${bloodline.forms.foot} · 蹼 ${bloodline.forms.webbed} · 鳍 ${bloodline.forms.fin}）`
       : '';
-    update('lineage-chain', `进化链：${chainText} ${formCounts}`);
+    update('lineage-chain', `${chainLabel} · ${chainText} ${formCounts}`);
     renderComparisonCard('ancestor', ancestorRec);
     renderComparisonCard('descendant', descendantRec, ancestorRec.generation);
   }
