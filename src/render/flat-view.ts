@@ -1,5 +1,5 @@
 import { clamp, hash, MAP_HALF, Terrain } from '../sim/terrain.ts';
-import { ROLES } from '../sim/types.ts';
+import { LIMBS, limbForm, ROLES } from '../sim/types.ts';
 import type { Creature, Frame } from '../sim/types.ts';
 import type { MapView } from './view.ts';
 
@@ -121,13 +121,37 @@ export class FlatView implements MapView {
       const x = w / 2 + (creature.x * c - creature.z * s) * unit;
       const y = h / 2 + (creature.x * s + creature.z * c) * unit * 0.82;
       this.hits.push({ id: creature.id, x, y });
+      const limb = limbForm(creature.genes.aquatic);
+      const heading = creature.angle + this.angle;
+      const rx = (limb === 'fin' ? 4.2 : 3.1) + creature.genes.size * this.scale;
+      const ry = (limb === 'fin' ? 1.9 : 2.4) + this.scale;
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.rotate(heading);
       ctx.fillStyle = ROLES[creature.role].color;
-      ctx.strokeStyle = '#172d23';
-      ctx.lineWidth = 1.2;
+      ctx.strokeStyle = LIMBS[limb].color;
+      ctx.lineWidth = limb === 'foot' ? 1.2 : 1.7;
+      if (limb === 'webbed') {
+        // Splayed webbed paddles on sides
+        ctx.beginPath();
+        ctx.ellipse(0, -ry * 1.15, 2.2, 1.2, -0.35, 0, Math.PI * 2);
+        ctx.ellipse(0, ry * 1.15, 2.2, 1.2, 0.35, 0, Math.PI * 2);
+        ctx.fill();
+      } else if (limb === 'fin') {
+        // Lateral flippers & caudal tail fin
+        ctx.beginPath();
+        ctx.moveTo(-rx * 0.9, 0);
+        ctx.lineTo(-rx * 1.45, -ry * 1.1);
+        ctx.lineTo(-rx * 1.45, ry * 1.1);
+        ctx.closePath();
+        ctx.fill();
+      }
       ctx.beginPath();
-      ctx.ellipse(x, y, 3 + creature.genes.size * this.scale, 2.4 + this.scale, creature.angle + this.angle, 0, Math.PI * 2);
+      ctx.ellipse(0, 0, rx, ry, 0, 0, Math.PI * 2);
       ctx.fill();
       ctx.stroke();
+      ctx.restore();
+
       if (this.focus !== creature.id || x < 62 || x > w - 62 || y < 60 || y > h - 25) continue;
       ctx.strokeStyle = '#ffdc89';
       ctx.lineWidth = 1.4;
@@ -135,7 +159,7 @@ export class FlatView implements MapView {
       ctx.arc(x, y, 9, 0, Math.PI * 2);
       ctx.stroke();
       this.label.hidden = false;
-      this.label.textContent = `${ROLES[creature.role].name} · ${String(creature.id).padStart(3, '0')}`;
+      this.label.textContent = `${ROLES[creature.role].name}·${LIMBS[limb].short} · ${String(creature.id).padStart(3, '0')}`;
       this.label.style.left = `${x}px`;
       this.label.style.top = `${y - 13}px`;
     }
@@ -155,6 +179,7 @@ export function drawFlatPortrait(host: HTMLElement, creature?: Creature) {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   if (!creature) return;
   const h = creature.genes.hue;
+  const limb = limbForm(creature.genes.aquatic);
   const ellipse = (x: number, y: number, a: number, b: number, color: string, angle = 0) => {
     ctx.fillStyle = color;
     ctx.beginPath();
@@ -162,10 +187,28 @@ export function drawFlatPortrait(host: HTMLElement, creature?: Creature) {
     ctx.fill();
   };
   ellipse(182, 136, 74, 10, '#101c18a8');
-  ellipse(128, 105, 13, 27, `hsl(${h} 28% 34%)`, 0.3);
-  ellipse(181, 109, 12, 28, `hsl(${h} 28% 37%)`);
+  if (limb === 'foot') {
+    // Sturdy terrestrial legs and foot pads
+    ellipse(128, 105, 13, 27, `hsl(${h} 28% 34%)`, 0.3);
+    ellipse(181, 109, 12, 28, `hsl(${h} 28% 37%)`);
+    ellipse(124, 131, 16, 6, '#a7b8a3');
+    ellipse(183, 133, 16, 6, '#a7b8a3');
+  } else if (limb === 'webbed') {
+    // Splayed legs + wide teal webbed feet + paddle tail
+    ellipse(128, 106, 12, 24, `hsl(${h} 30% 36%)`, 0.38);
+    ellipse(181, 110, 12, 25, `hsl(${h} 30% 38%)`, 0.12);
+    ellipse(122, 131, 24, 7.5, '#66b5a6', -0.08);
+    ellipse(186, 133, 24, 7.5, '#66b5a6', 0.08);
+    ellipse(106, 88, 22, 11, '#72b8aa', 0.25);
+  } else {
+    // Swept pectoral/pelvic flippers + dorsal & crescent caudal fins
+    ellipse(102, 92, 12, 28, '#549bc9', 0.22);
+    ellipse(158, 70, 11, 24, '#498eb8', -0.52);
+    ellipse(134, 114, 24, 9, '#549bc9', 0.58);
+    ellipse(184, 116, 28, 10, '#549bc9', 0.48);
+  }
   ellipse(126, 83, 30, 8, `hsl(${h} 31% 48%)`, 0.32);
-  ellipse(163, 91, 52, 36, `hsl(${h} 33% 48%)`, -0.04);
+  ellipse(163, 91, limb === 'fin' ? 58 : 52, limb === 'fin' ? 31 : 36, `hsl(${h} 33% 48%)`, -0.04);
   for (let i = 0; i < 3; i++) {
     ellipse(149 + i * 17, 57, 8, 21 * (0.7 + creature.genes.crest * 0.5), i % 2 ? '#9bad65' : '#b6ba6b', -0.58);
   }

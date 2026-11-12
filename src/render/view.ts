@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { clamp, Terrain } from '../sim/terrain.ts';
-import { MAX_POPULATION, ROLES } from '../sim/types.ts';
-import type { Creature, Frame, Role } from '../sim/types.ts';
+import { LIMBS, limbForm, MAX_POPULATION, ROLES } from '../sim/types.ts';
+import type { Creature, Frame, LimbForm, Role } from '../sim/types.ts';
 import { island } from './landscape.ts';
 import { model, modelMaterial, portraitModel, scaleFor, tintFor } from './models.ts';
 import { FlatView, drawFlatPortrait } from './flat-view.ts';
@@ -40,8 +40,11 @@ interface BodyBatch {
   detail: THREE.InstancedMesh;
 }
 
-const batchKey = (role: Role, tall: boolean) => role + String(tall);
-const tag = (creature: Creature) => `${ROLES[creature.role].name} · ${String(creature.id).padStart(3, '0')}`;
+const batchKey = (role: Role, tall: boolean, limb: LimbForm) => `${role}:${tall}:${limb}`;
+const tag = (creature: Creature) => {
+  const limb = limbForm(creature.genes.aquatic);
+  return `${ROLES[creature.role].name}·${LIMBS[limb].short} · ${String(creature.id).padStart(3, '0')}`;
+};
 
 class IslandView implements MapView {
   private readonly scene = new THREE.Scene();
@@ -87,14 +90,16 @@ class IslandView implements MapView {
     this.reset();
     for (const role of ['grazer', 'hunter'] as const) {
       for (const tall of [false, true]) {
-        const parts = model(role, tall);
-        const skin = new THREE.InstancedMesh(parts.skin, modelMaterial(), MAX_POPULATION);
-        const detail = new THREE.InstancedMesh(parts.detail, modelMaterial(), MAX_POPULATION);
-        skin.frustumCulled = detail.frustumCulled = false;
-        skin.count = detail.count = 0;
-        skin.castShadow = true;
-        this.scene.add(skin, detail);
-        this.batches.set(batchKey(role, tall), { skin, detail });
+        for (const limb of ['foot', 'webbed', 'fin'] as const) {
+          const parts = model(role, tall, limb);
+          const skin = new THREE.InstancedMesh(parts.skin, modelMaterial(), MAX_POPULATION);
+          const detail = new THREE.InstancedMesh(parts.detail, modelMaterial(), MAX_POPULATION);
+          skin.frustumCulled = detail.frustumCulled = false;
+          skin.count = detail.count = 0;
+          skin.castShadow = true;
+          this.scene.add(skin, detail);
+          this.batches.set(batchKey(role, tall, limb), { skin, detail });
+        }
       }
     }
     this.selectedRing = new THREE.Mesh(new THREE.RingGeometry(1.38, 1.54, 52).rotateX(-Math.PI / 2),
@@ -194,9 +199,11 @@ class IslandView implements MapView {
       pose.x += (c.x - pose.x) * 0.16;
       pose.z += (c.z - pose.z) * 0.16;
       this.poses.set(c.id, pose);
-      const height = terrain.height(pose.x, pose.z);
+      const rawHeight = terrain.height(pose.x, pose.z);
+      const limb = limbForm(c.genes.aquatic);
+      const height = rawHeight < 0.08 ? Math.max(rawHeight, -0.14) : rawHeight;
       const scale = scaleFor(c);
-      const batch = this.batches.get(batchKey(c.role, c.genes.crest > 0.49))!;
+      const batch = this.batches.get(batchKey(c.role, c.genes.crest > 0.49, limb))!;
       const index = batch.skin.count++;
       batch.detail.count++;
       const bob = frame.playing ? Math.sin(time * 9 + c.id * 2.3) * 0.055 : 0;

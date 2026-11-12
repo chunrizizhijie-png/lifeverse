@@ -96,11 +96,13 @@
               <div class="meter"><span>能量</span><progress id="energy" value="0" max="100" aria-label="能量"></progress><output id="energy-value">—</output></div>
               <div class="meter"><span>成熟度</span><progress id="maturity" value="0" max="100" aria-label="成熟度"></progress><output id="maturity-value">—</output></div>
             </div>
-            <dl class="traits">
+            <dl class="traits traits-four">
+              <div><dt>附肢形态</dt><dd id="trait-limb">—</dd></div>
               <div><dt>体型</dt><dd id="trait-size">—</dd></div>
               <div><dt>移速</dt><dd id="trait-speed">—</dd></div>
               <div><dt>适温</dt><dd id="trait-comfort">—</dd></div>
             </dl>
+            <p class="trait-ability" id="trait-ability">栖息与行动能力：等待观测个体</p>
             <div class="gift-section">
               <div class="gift-heading">
                 <h3>造物主恩赐</h3><button class="track" id="track" type="button" disabled><span aria-hidden="true">◇</span> 追踪血脉</button>
@@ -123,7 +125,29 @@
                 <div><dt>在世后代</dt><dd id="descendants-alive">0</dd></div>
                 <div><dt>最深世代</dt><dd id="descendants-generation">—</dd></div>
               </dl>
-              <h3 class="lineage-list-title">血脉记录</h3>
+              <div class="lineage-compare" id="lineage-compare">
+                <div class="compare-header">
+                  <h3>祖先与后代形态对照</h3>
+                  <span id="lineage-chain">进化链：陆行足</span>
+                </div>
+                <div class="compare-grid">
+                  <div class="compare-card" id="compare-ancestor">
+                    <span class="compare-tag">始祖</span>
+                    <strong id="ancestor-title">—</strong>
+                    <span id="ancestor-limb">—</span>
+                    <span id="ancestor-ability">—</span>
+                    <span id="ancestor-stats">—</span>
+                  </div>
+                  <div class="compare-card" id="compare-descendant">
+                    <span class="compare-tag">后代</span>
+                    <strong id="descendant-title">—</strong>
+                    <span id="descendant-limb">—</span>
+                    <span id="descendant-ability">—</span>
+                    <span id="descendant-stats">—</span>
+                  </div>
+                </div>
+              </div>
+              <h3 class="lineage-list-title">血脉记录（点击个体可对照）</h3>
               <ul class="lineage-list" id="lineage-list"></ul>
             </div>
           </section>
@@ -138,7 +162,7 @@
               <label class="slider-label" for="set-rain"><strong>降水强度</strong><output id="set-rain-value">64%</output></label>
               <input id="set-rain" type="range" min="10" max="100" value="64">
               <div class="range-ends"><span>干旱</span><span>丰沛</span></div>
-              <p>降水增加时，苔叶兽可采食的资源恢复得更快。</p>
+              <p>降水增加时，浅滩水藻与陆地植物恢复更快，促进涉水蹼与游水鳍繁衍。</p>
               <button class="button" id="reset-climate" type="button">恢复初始气候</button>
             </div>
           </section>
@@ -156,6 +180,9 @@
         </div>
         <div class="population-plot">
           <div class="plot-legend">
+            <span class="legend-foot">陆行足 <b id="foot-count">—</b></span>
+            <span class="legend-webbed">涉水蹼 <b id="webbed-count">—</b></span>
+            <span class="legend-fin">游水鳍 <b id="fin-count">—</b></span>
             <span class="legend-grazer">苔叶兽 <b id="grazer-count">—</b></span>
             <span class="legend-hunter">琥脊兽 <b id="hunter-count">—</b></span>
           </div>

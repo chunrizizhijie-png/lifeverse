@@ -1,7 +1,12 @@
+import { LIMBS } from './types.ts';
+import type { LimbForm } from './types.ts';
+
 export const MAP_HALF = 63;
 export const GRID_SIZE = 42;
 export const CELL_WIDTH = 2 * MAP_HALF / GRID_SIZE;
 export const LAND_HEIGHT = 0.55;
+export const SHALLOW_HEIGHT = -2.4;
+export const FIN_MAX_LAND_HEIGHT = 1.85;
 const HEIGHT_RESOLUTION = 126;
 
 export const clamp = (v: number, low: number, high: number) => Math.min(high, Math.max(low, v));
@@ -59,6 +64,7 @@ export interface Cell {
   x: number;
   z: number;
   capacity: number;
+  aquatic: boolean;
 }
 
 export class Terrain {
@@ -66,6 +72,7 @@ export class Terrain {
   readonly heights = new Float32Array((HEIGHT_RESOLUTION + 1) ** 2);
   readonly cells: Cell[] = [];
   readonly land: number[] = [];
+  readonly water: number[] = [];
 
   constructor(seed: number) {
     this.seed = seed;
@@ -78,12 +85,28 @@ export class Terrain {
       for (let col = 0; col < GRID_SIZE; col++) {
         const x = (col + 0.5) * CELL_WIDTH - MAP_HALF;
         const z = (row + 0.5) * CELL_WIDTH - MAP_HALF;
+        const h = this.height(x, z);
         const habitat = this.habitat(x, z);
-        const capacity = { sea: 0, shore: 14, meadow: 38, woodland: 49, ridge: 16 }[habitat];
-        if (this.isLand(x, z)) this.land.push(this.cells.length);
-        this.cells.push({ x, z, capacity: capacity * (0.78 + hash(col, row, seed) * 0.42) });
+        const isLandCell = this.isLand(x, z);
+        let baseCapacity = { sea: 0, shore: 14, meadow: 38, woodland: 49, ridge: 16 }[habitat];
+        if (!isLandCell) {
+          baseCapacity = h >= SHALLOW_HEIGHT ? 34 : h >= -5.5 ? 24 : 12;
+        }
+        const index = this.cells.length;
+        if (isLandCell) this.land.push(index);
+        else this.water.push(index);
+        this.cells.push({
+          x,
+          z,
+          capacity: baseCapacity * (0.78 + hash(col, row, seed) * 0.42),
+          aquatic: !isLandCell,
+        });
       }
     }
+  }
+
+  inBounds(x: number, z: number) {
+    return Math.abs(x) < MAP_HALF && Math.abs(z) < MAP_HALF;
   }
 
   height(x: number, z: number) {
@@ -98,7 +121,24 @@ export class Terrain {
   }
 
   isLand(x: number, z: number) {
-    return Math.abs(x) < MAP_HALF && Math.abs(z) < MAP_HALF && this.height(x, z) >= LAND_HEIGHT;
+    return this.inBounds(x, z) && this.height(x, z) >= LAND_HEIGHT;
+  }
+
+  isShallows(x: number, z: number) {
+    if (!this.inBounds(x, z)) return false;
+    const h = this.height(x, z);
+    return h >= SHALLOW_HEIGHT && h < LAND_HEIGHT;
+  }
+
+  isWater(x: number, z: number) {
+    return this.inBounds(x, z) && this.height(x, z) < LAND_HEIGHT;
+  }
+
+  canTraverse(x: number, z: number, limb: LimbForm = 'foot') {
+    if (!this.inBounds(x, z)) return false;
+    const h = this.height(x, z);
+    const spec = LIMBS[limb];
+    return h >= spec.minHeight && h <= spec.maxHeight;
   }
 
   habitat(x: number, z: number): Habitat {

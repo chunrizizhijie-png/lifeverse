@@ -1,7 +1,7 @@
 import './style.css';
 import { createMap, createPortrait } from './render/view.ts';
-import { DEFAULT_SEED, INITIAL_CLIMATE, MINUTES_PER_TICK, ROLES } from './sim/types.ts';
-import type { Command, Creature, Frame, Gift, Save, Speed, WorkerReply } from './sim/types.ts';
+import { DEFAULT_SEED, describeCapabilities, INITIAL_CLIMATE, LIMBS, limbForm, MINUTES_PER_TICK, ROLES } from './sim/types.ts';
+import type { Command, Creature, Frame, Gift, Record as LineageRecord, Save, Speed, WorkerReply } from './sim/types.ts';
 import { MATURE_AGE, validSeed } from './sim/world.ts';
 import { makeChart } from './ui/chart.ts';
 
@@ -48,6 +48,7 @@ const saveKey = 'lifeverse.save.v1';
 
 let frame: Frame | undefined;
 let selected: number | null = null;
+let comparedDescendantId: number | null = null;
 let manuallySelected = false;
 let pickerKey = '';
 let portraitKey = '';
@@ -81,9 +82,12 @@ function choose(id: number, openPanel = false) {
 
 function refreshPicker(creatures: Creature[]) {
   const missing = selected !== null && !creatures.some(c => c.id === selected);
-  const key = `${creatures.map(c => c.id).join(',')}|${missing ? selected : ''}`;
+  const key = `${creatures.map(c => `${c.id}:${limbForm(c.genes.aquatic)}`).join(',')}|${missing ? selected : ''}`;
   if (key !== pickerKey) {
-    const options = creatures.map(c => new Option(`${labelId(c.id)} · ${ROLES[c.role].name}`, String(c.id)));
+    const options = creatures.map(c => {
+      const limb = LIMBS[limbForm(c.genes.aquatic)].short;
+      return new Option(`${labelId(c.id)} · ${ROLES[c.role].name} [${limb}]`, String(c.id));
+    });
     if (missing) options.unshift(new Option(`${labelId(selected!)} · 已死亡`, String(selected)));
     picker.replaceChildren(...(options.length ? options : [new Option('—', '')]));
     pickerKey = key;
@@ -102,20 +106,29 @@ function refreshIndividual() {
   const creature = current();
   const dead = !creature && selected !== null;
   const root = creature && frame?.bloodline?.root === creature.id;
-  update('creature-name', creature ? ROLES[creature.role].name : dead ? `个体 ${labelId(selected!)}` : '等待观测');
-  update('creature-meta', creature ? `${ROLES[creature.role].diet} · 第 ${creature.generation} 代` : dead ? '已离开世界' : '选择地图上的个体');
+  const cap = creature ? describeCapabilities(creature.genes) : undefined;
+  update('creature-name', creature && cap ? `${ROLES[creature.role].name} · ${cap.limbName}` : dead ? `个体 ${labelId(selected!)}` : '等待观测');
+  update('creature-meta', creature && cap
+    ? `${ROLES[creature.role].diet} · 第 ${creature.generation} 代 · ${cap.habitat}`
+    : dead ? '已离开世界' : '选择地图上的个体');
   element('portrait-empty').hidden = !!creature;
   update('portrait-empty', dead ? '该个体已离开世界' : '暂无在世个体');
-  const imageKey = creature ? `${creature.id}|${creature.role}|${creature.genes.hue}|${creature.genes.crest}|${creature.genes.size}` : '-';
+  const imageKey = creature && cap
+    ? `${creature.id}|${creature.role}|${creature.genes.hue}|${creature.genes.crest}|${creature.genes.size}|${cap.limb}`
+    : '-';
   if (imageKey !== portraitKey) {
     drawPortrait(creature);
     portraitKey = imageKey;
   }
   setMeter('energy', creature?.energy);
   setMeter('maturity', creature ? Math.min(100, creature.age / MATURE_AGE * 100) : undefined);
+  update('trait-limb', creature && cap ? `${cap.limbName} (${Math.round(creature.genes.aquatic * 100)}%)` : '—');
   update('trait-size', creature ? `${creature.genes.size.toFixed(2)}×` : '—');
   update('trait-speed', creature ? `${creature.genes.speed.toFixed(2)}×` : '—');
   update('trait-comfort', creature ? `${creature.genes.comfort.toFixed(1)}°C` : '—');
+  update('trait-ability', cap
+    ? `${cap.ability} · 陆速 ${cap.landSpeed}× / 水速 ${cap.waterSpeed}×`
+    : '栖息与行动能力：等待观测个体');
   for (const button of gifts) button.disabled = !creature;
   update('track', root ? '◇ 查看血脉' : '◇ 追踪血脉');
   track.disabled = trackFromLineage.disabled = !creature;
@@ -124,29 +137,69 @@ function refreshIndividual() {
   refreshPicker(frame?.creatures ?? []);
 }
 
+function renderComparisonCard(prefix: 'ancestor' | 'descendant', record: LineageRecord, baseGen?: number) {
+  const cap = describeCapabilities(record.genes);
+  const spanText = baseGen !== undefined && record.generation > baseGen
+    ? ` (+${record.generation - baseGen} 代)`
+    : '';
+  update(`${prefix}-title`, `${labelId(record.id)} · 第 ${record.generation} 代${spanText}`);
+  update(`${prefix}-limb`, `${cap.limbName} · 水生度 ${Math.round(record.genes.aquatic * 100)}%`);
+  update(`${prefix}-ability`, `${cap.ability} (陆 ${cap.landSpeed}x / 水 ${cap.waterSpeed}x)`);
+  update(`${prefix}-stats`, `体型 ${record.genes.size.toFixed(2)}x · 适温 ${record.genes.comfort.toFixed(1)}°C`);
+}
+
 function refreshLineage(next: Frame) {
   const bloodline = next.bloodline;
   element('lineage-data').hidden = !bloodline;
   update('lineage-summary', bloodline
     ? `${ROLES[bloodline.role].name} ${labelId(bloodline.root)} 的血脉记录`
     : '选择一个在世个体，追踪它的后代。');
-  if (!bloodline) { lineageKey = ''; return; }
+  if (!bloodline) {
+    lineageKey = '';
+    comparedDescendantId = null;
+    return;
+  }
   update('descendants', fmt.format(bloodline.total));
   update('descendants-alive', fmt.format(bloodline.living));
   update('descendants-generation', `第 ${bloodline.generation} 代`);
-  const key = `${bloodline.root}|${next.branch.map(record => `${record.id}:${record.died}`).join(',')}`;
+
+  const ancestorRec = next.branch[0];
+  const customDesc = comparedDescendantId ? next.branch.find(r => r.id === comparedDescendantId) : undefined;
+  const defaultDesc = bloodline.comparison
+    ? next.branch.find(r => r.id === bloodline.comparison!.descendantId)
+    : undefined;
+  const descendantRec = customDesc ?? defaultDesc ?? next.branch.at(-1);
+
+  if (ancestorRec && descendantRec) {
+    const chainText = bloodline.comparison?.stageChain.map(l => LIMBS[l].name).join(' → ') ?? LIMBS[ancestorRec.limb].name;
+    const formCounts = bloodline.forms
+      ? `（足 ${bloodline.forms.foot} · 蹼 ${bloodline.forms.webbed} · 鳍 ${bloodline.forms.fin}）`
+      : '';
+    update('lineage-chain', `进化链：${chainText} ${formCounts}`);
+    renderComparisonCard('ancestor', ancestorRec);
+    renderComparisonCard('descendant', descendantRec, ancestorRec.generation);
+  }
+
+  const key = `${bloodline.root}|${comparedDescendantId}|${next.branch.map(r => `${r.id}:${r.died}:${r.limb}`).join(',')}`;
   if (key === lineageKey) return;
   lineageKey = key;
   const rows = next.branch.map(record => {
     const row = document.createElement('li');
     const select = document.createElement('button');
     select.type = 'button';
-    select.textContent = record.id === bloodline.root ? `${labelId(record.id)} · 神选者`
-      : `${labelId(record.id)} · 来自 ${labelId(record.parent!)}`;
-    select.disabled = record.died !== null;
-    select.addEventListener('click', () => choose(record.id, true));
+    const cap = describeCapabilities(record.genes);
+    const prefix = record.id === bloodline.root
+      ? `${labelId(record.id)} · 神选始祖`
+      : `${labelId(record.id)} · 源自 ${labelId(record.parent!)}`;
+    select.textContent = `${prefix} [${LIMBS[record.limb].name}]`;
+    select.addEventListener('click', () => {
+      comparedDescendantId = record.id;
+      lineageKey = '';
+      if (frame) refreshLineage(frame);
+      if (record.died === null) choose(record.id, false);
+    });
     const info = document.createElement('span');
-    info.textContent = `第 ${record.generation} 代 · ${record.died === null ? '在世' : '已死亡'}`;
+    info.textContent = `第 ${record.generation} 代 · 陆${cap.landSpeed}x/水${cap.waterSpeed}x · ${record.died === null ? '在世' : '已逝'}`;
     row.append(select, info);
     return row;
   });
@@ -156,6 +209,7 @@ function refreshLineage(next: Frame) {
 function refresh(next: Frame) {
   if (frame?.seed !== next.seed || (frame && frame.tick > next.tick)) {
     selected = next.creatures[0]?.id ?? null;
+    comparedDescendantId = null;
     manuallySelected = false;
     portraitKey = '';
   }
@@ -184,15 +238,28 @@ function refresh(next: Frame) {
     rain.value = String(next.climate.rain);
     update('set-rain-value', `${rain.value}%`);
   }
-  const grazer = next.creatures.filter(c => c.role === 'grazer').length;
+  let grazer = 0;
+  let foot = 0;
+  let webbed = 0;
+  let fin = 0;
+  for (const c of next.creatures) {
+    if (c.role === 'grazer') grazer++;
+    const l = limbForm(c.genes.aquatic);
+    if (l === 'foot') foot++;
+    else if (l === 'webbed') webbed++;
+    else fin++;
+  }
   const hunter = next.creatures.length - grazer;
   update('living', fmt.format(next.creatures.length));
   update('births', fmt.format(next.births));
   update('deaths', fmt.format(next.deaths));
+  update('foot-count', fmt.format(foot));
+  update('webbed-count', fmt.format(webbed));
+  update('fin-count', fmt.format(fin));
   update('grazer-count', fmt.format(grazer));
   update('hunter-count', fmt.format(hunter));
   update('population-period', next.census[0]?.tick ? '最近记录' : '自世界生成');
-  drawChart(next.census, { tick: next.tick, grazer, hunter });
+  drawChart(next.census, { tick: next.tick, grazer, hunter, foot, webbed, fin });
 }
 
 interface BrowserSave { savedAt: string; world: Save }
