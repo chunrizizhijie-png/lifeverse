@@ -1,3 +1,4 @@
+import { LIMBS, limbForm, wingForm } from '../sim/adaptations.ts';
 import { speciesName } from '../sim/evolution.ts';
 import { clamp, hash, Terrain, tileLayoutKey } from '../sim/terrain.ts';
 import type { Habitat } from '../sim/terrain.ts';
@@ -157,12 +158,28 @@ export class FlatView implements MapView {
       const y = h / 2 + (localX * s + localZ * c) * unit * 0.82;
       if (x < -12 || x > w + 12 || y < -12 || y > h + 12) continue;
       this.hits.push({ id: creature.id, x, y });
+      const limb = limbForm(creature.genes.aquatic);
+      const wing = wingForm(creature.genes.aerial);
+      const radius = visualScale < 0.62 ? 1.7 : 3 + creature.genes.size * visualScale;
+      if (wing !== 'wingless' && (visualScale >= 0.62 || creature.id === this.focus)) {
+        ctx.save();
+        ctx.translate(x, y);
+        ctx.rotate(creature.angle + this.angle);
+        ctx.strokeStyle = wing === 'flyer' ? '#efcc8b' : '#d7cdb4';
+        ctx.lineWidth = 1.6;
+        const span = radius * (wing === 'flyer' ? 2.3 : 1.55);
+        ctx.beginPath();
+        ctx.moveTo(-radius * 0.55, -span);
+        ctx.lineTo(0, 0);
+        ctx.lineTo(-radius * 0.55, span);
+        ctx.stroke();
+        ctx.restore();
+      }
       ctx.fillStyle = ROLES[creature.role].color;
-      ctx.strokeStyle = creature.form === 'wetland' ? '#b2ebda' : creature.form === 'dryland' ? '#f4cc8f' : '#172d23';
+      ctx.strokeStyle = limb === 'foot' ? '#172d23' : LIMBS[limb].color;
       ctx.lineWidth = creature.form === 'ancestral' ? 1.2 : 1.5;
       ctx.beginPath();
-      const radius = visualScale < 0.62 ? 1.7 : 3 + creature.genes.size * visualScale;
-      ctx.ellipse(x, y, radius, radius * 0.83, creature.angle + this.angle, 0, Math.PI * 2);
+      ctx.ellipse(x, y, radius, radius * (limb === 'fin' ? 0.60 : 0.83), creature.angle + this.angle, 0, Math.PI * 2);
       ctx.fill();
       ctx.stroke();
       if (this.focus !== creature.id || x < 62 || x > w - 62 || y < 60 || y > h - 25) continue;
@@ -173,7 +190,7 @@ export class FlatView implements MapView {
       ctx.stroke();
       this.label.hidden = false;
       const branch = this.current?.species.find(species => species.id === creature.species);
-      const name = branch?.niche ? speciesName(branch) : creatureName(creature.role, creature.form);
+      const name = branch && branch.parent !== null ? speciesName(branch) : creatureName(creature.role, creature.form);
       this.label.textContent = `${name} · ${String(creature.id).padStart(3, '0')}`;
       this.label.style.left = `${x}px`;
       this.label.style.top = `${y - 13}px`;
@@ -194,6 +211,8 @@ export function drawFlatPortrait(host: HTMLElement, creature?: Creature) {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   if (!creature) return;
   const { role, form, genes, age } = creature;
+  const limb = limbForm(genes.aquatic);
+  const wing = wingForm(genes.aerial);
   const h = genes.hue;
   const accent = ROLES[role].color;
   const ellipse = (x: number, y: number, a: number, b: number, color: string, angle = 0) => {
@@ -218,8 +237,14 @@ export function drawFlatPortrait(host: HTMLElement, creature?: Creature) {
   ctx.scale(scale * (role === 'stalker' ? 1.14 : 1), scale * (role === 'wader' ? 0.82 : 1));
   ctx.translate(-180, -128);
   ellipse(182, 136, 74, 10, '#101c18a8');
-  ellipse(128, 105, 13, 27, `hsl(${h} 28% 34%)`, 0.3);
-  ellipse(181, 109, 12, 28, `hsl(${h} 28% 37%)`);
+  if (limb !== 'fin') {
+    ellipse(128, 105, 13, 27, `hsl(${h} 28% 34%)`, 0.3);
+    ellipse(181, 109, 12, 28, `hsl(${h} 28% 37%)`);
+  }
+  if (wing !== 'wingless') {
+    ellipse(132, 59, wing === 'flyer' ? 65 : 44, wing === 'flyer' ? 13 : 9, '#d9bc83', 0.55);
+    if (wing === 'flyer') ellipse(114, 52, 49, 7, '#b29156', 0.34);
+  }
   ellipse(126, 83, 30, 8, `hsl(${h} 31% 48%)`, 0.32);
   ellipse(163, 91, 52, 36, `hsl(${h} 33% 48%)`, -0.04);
   const fin = role === 'grazer' || role === 'wader';
@@ -229,7 +254,10 @@ export function drawFlatPortrait(host: HTMLElement, creature?: Creature) {
     if (fin) ellipse(x, 57, 8, height, accent, -0.58);
     else spike(x, 64, x - 10, 62 - height, 8, accent);
   }
-  if (role === 'wader' || form === 'wetland') {
+  if (limb === 'fin') {
+    ellipse(99, 76, 28, 13, '#64bac5', -0.52);
+    ellipse(155, 109, 24, 8, '#87d9ca', -0.46);
+  } else if (limb === 'webbed') {
     ellipse(103, 80, 20, 8, '#66bfae', 0.31);
     ellipse(155, 111, 17, 7, '#87d9ca', -0.42);
   } else if (form === 'dryland') {

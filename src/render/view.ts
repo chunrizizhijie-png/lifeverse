@@ -1,7 +1,8 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { limbForm, wingForm } from '../sim/adaptations.ts';
 import { speciesName } from '../sim/evolution.ts';
-import { clamp, MAP_HALF, Terrain, tileLayoutKey } from '../sim/terrain.ts';
+import { clamp, LAND_HEIGHT, MAP_HALF, Terrain, tileLayoutKey } from '../sim/terrain.ts';
 import { ATLAS_SIZE, creatureName, MAX_POPULATION, ROLES } from '../sim/types.ts';
 import type { Creature, Frame } from '../sim/types.ts';
 import { island } from './landscape.ts';
@@ -192,11 +193,13 @@ class IslandView implements MapView {
 
   private batchFor(creature: Creature) {
     const tall = creature.genes.crest > 0.49;
-    const key = `${creature.role}/${tall}/${creature.form}`;
+    const limb = limbForm(creature.genes.aquatic);
+    const wing = wingForm(creature.genes.aerial);
+    const key = `${creature.role}/${tall}/${creature.form}/${limb}/${wing}`;
     const existing = this.batches.get(key);
     if (existing) return existing;
 
-    const parts = model(creature.role, tall, creature.form);
+    const parts = model(creature.role, tall, creature.form, limb, wing);
     const limit = MAX_POPULATION * (this.terrain?.tiles.length ?? 1);
     const skin = new THREE.InstancedMesh(parts.skin, modelMaterial(), limit);
     const detail = new THREE.InstancedMesh(parts.detail, modelMaterial(), limit);
@@ -230,7 +233,9 @@ class IslandView implements MapView {
       pose.x += dx * blend;
       pose.z += dz * blend;
       this.poses.set(c.id, pose);
-      const height = Math.max(0.04, terrain.height(pose.x, pose.z));
+      const ground = terrain.height(pose.x, pose.z);
+      const flying = wingForm(c.genes.aerial) === 'flyer';
+      const height = Math.max(0.04, ground) + (flying ? ground < LAND_HEIGHT ? 3.8 : 1.15 : 0);
       const scale = scaleFor(c);
       const hit = this.project(pose.x, height + 0.68 * scale, pose.z);
       if (hit.x < -30 || hit.y < -30 || hit.x > this.width + 30 || hit.y > this.height + 30) continue;
@@ -245,7 +250,7 @@ class IslandView implements MapView {
         const batch = this.batchFor(c);
         const index = batch.skin.count++;
         batch.detail.count++;
-        const bob = frame.playing ? Math.sin(time * 9 + c.id * 2.3) * 0.055 : 0;
+        const bob = frame.playing ? Math.sin(time * 9 + c.id * 2.3) * (flying ? 0.21 : 0.055) : 0;
         this.dummy.position.set(pose.x, height + bob, pose.z);
         this.dummy.rotation.set(0, Math.PI / 2 - c.angle, 0);
         this.dummy.scale.set(scale, scale, scale * (1 + (c.genes.speed - 1) * 0.20));
@@ -263,7 +268,7 @@ class IslandView implements MapView {
       if (point.x > 64 && point.x < this.width - 64 && point.y > 54 && point.y < this.height - 26) {
         this.label.hidden = false;
         const branch = frame.species.find(species => species.id === c.species);
-        const name = branch?.niche ? speciesName(branch) : creatureName(c.role, c.form);
+        const name = branch && branch.parent !== null ? speciesName(branch) : creatureName(c.role, c.form);
         const label = `${name} · ${String(c.id).padStart(3, '0')}`;
         if (this.label.textContent !== label) this.label.textContent = label;
         this.label.style.left = `${point.x}px`;

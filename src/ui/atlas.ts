@@ -3,6 +3,7 @@ import { ATLAS_SIZE, BIOMES, DEFAULT_SEED, MINUTES_PER_TICK } from '../sim/types
 import type { Biome, Command, Frame, MapTile, ParcelSource, Save } from '../sim/types.ts';
 
 const ATLAS_SLOT = ATLAS_SIZE;
+const LEGACY_SOURCE = -1;
 const LEGACY_KEY = 'lifeverse.save.v1';
 const DRAFTS_KEY = 'lifeverse.atlas.layout';
 const STORE_NAME = 'worlds';
@@ -102,7 +103,7 @@ function readDrafts(): Draft[] {
     return {
       biome: isBiome(draft?.biome) ? draft.biome : biome,
       seed: validSeed(draft?.seed) ? draft.seed : DEFAULT_SEED + 113 * index,
-      source: source === 'fresh' || (typeof source === 'number' && Number.isInteger(source) && source >= 0 && source < ATLAS_SLOT)
+      source: source === 'fresh' || (typeof source === 'number' && Number.isInteger(source) && source >= LEGACY_SOURCE && source < ATLAS_SLOT)
         ? source : 'auto',
     };
   });
@@ -206,7 +207,9 @@ export function createAtlas(send: (command: Command) => void, notice: (message: 
   const cultivate = action('新建单区');
   const loadSolo = action('读取本区存档');
   const saveSolo = action('保存当前单区到此');
-  soloActions.append(cultivate, loadSolo, saveSolo);
+  const loadLegacy = action('读取旧版单槽存档');
+  loadLegacy.hidden = true;
+  soloActions.append(cultivate, loadSolo, saveSolo, loadLegacy);
   inspector.append(inspectorTitle, focus, savedDescription, sourceLabel, settings, soloActions);
   body.append(layout, inspector);
 
@@ -229,6 +232,7 @@ export function createAtlas(send: (command: Command) => void, notice: (message: 
     const slot = origin === 'auto' ? index : origin;
     return worlds.has(slot) ? slot : undefined;
   };
+  const slotLabel = (slot: number) => slot === LEGACY_SOURCE ? '旧版单槽存档' : `第 ${slot + 1} 区存档`;
 
   function report(message: string) {
     if (dialog.open) status.textContent = message;
@@ -253,7 +257,7 @@ export function createAtlas(send: (command: Command) => void, notice: (message: 
       card.button.setAttribute('aria-pressed', String(index === selected));
       updateText(card.biome, BIOMES[tileBiome].name);
       const region = isAtlas() ? frame?.regions[index] : undefined;
-      const origin = slot === undefined ? '新建' : `第 ${slot + 1} 区存档`;
+      const origin = slot === undefined ? '新建' : slotLabel(slot);
       updateText(card.summary, region ? `${origin} · 在世 ${region.population} 只` : origin);
     }
   }
@@ -266,7 +270,7 @@ export function createAtlas(send: (command: Command) => void, notice: (message: 
       const options = entries.map(entry => {
         const tile = savedWorld(entry.world)?.tiles?.[0];
         const name = tile && isBiome(tile.biome) ? BIOMES[tile.biome].name : BIOMES.archipelago.name;
-        return new Option(`第 ${entry.slot + 1} 区存档 · ${name}`, String(entry.slot));
+        return new Option(`${slotLabel(entry.slot)} · ${name}`, String(entry.slot));
       });
       source.replaceChildren(new Option('重新生成', 'fresh'), ...options);
     }
@@ -289,6 +293,8 @@ export function createAtlas(send: (command: Command) => void, notice: (message: 
     updateSourceOptions();
     cultivate.disabled = !frame || !validSeed(drafts[selected].seed);
     loadSolo.disabled = loading || !stored || pending.has(selected);
+    loadLegacy.hidden = !worlds.has(LEGACY_SOURCE);
+    loadLegacy.disabled = loading;
     saveSolo.disabled = loading || !frame || isAtlas() || pending.has(selected);
     loadAtlas.disabled = loading || !worlds.has(ATLAS_SLOT) || pending.has(ATLAS_SLOT);
     saveAtlas.disabled = loading || !isAtlas() || pending.has(ATLAS_SLOT);
@@ -309,6 +315,7 @@ export function createAtlas(send: (command: Command) => void, notice: (message: 
     try {
       for (const entry of await readWorlds()) {
         if (Number.isInteger(entry.slot) && entry.slot >= 0 && entry.slot <= ATLAS_SLOT && savedWorld(entry.world)) {
+          if (entry.slot === 0 && legacy) worlds.set(LEGACY_SOURCE, { ...legacy, slot: LEGACY_SOURCE });
           worlds.set(entry.slot, entry);
         }
       }
@@ -349,7 +356,8 @@ export function createAtlas(send: (command: Command) => void, notice: (message: 
   function load(slot: number) {
     const stored = worlds.get(slot);
     if (!stored) return;
-    if (slot < ATLAS_SLOT) activeSlot = slot;
+    if (slot === LEGACY_SOURCE) activeSlot = selected;
+    else if (slot < ATLAS_SLOT) activeSlot = slot;
     send({ type: 'load', save: stored.world });
     dialog.close();
   }
@@ -362,6 +370,7 @@ export function createAtlas(send: (command: Command) => void, notice: (message: 
     dialog.close();
   });
   loadSolo.addEventListener('click', () => load(selected));
+  loadLegacy.addEventListener('click', () => load(LEGACY_SOURCE));
   saveSolo.addEventListener('click', () => save(selected));
   loadAtlas.addEventListener('click', () => load(ATLAS_SLOT));
   saveAtlas.addEventListener('click', () => save(ATLAS_SLOT));
@@ -405,6 +414,7 @@ export function createAtlas(send: (command: Command) => void, notice: (message: 
       try {
         const entry = { slot: destination, savedAt: new Date().toISOString(), world: save };
         await writeWorld(entry);
+        if (destination === 0 && legacy) worlds.set(LEGACY_SOURCE, { ...legacy, slot: LEGACY_SOURCE });
         worlds.set(destination, entry);
         report(`已保存${name}。`);
       } catch {

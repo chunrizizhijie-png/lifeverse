@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { limbForm, wingForm } from '../src/sim/adaptations.ts';
 import { GRID_SIZE, LEGACY_GRID_SIZE, LEGACY_MAP_HALF, MAP_HALF } from '../src/sim/terrain.ts';
 import { World, MATURE_AGE } from '../src/sim/world.ts';
 import { DEFAULT_SEED, MAX_POPULATION, ROLE_KEYS } from '../src/sim/types.ts';
@@ -36,8 +37,7 @@ test('五种初始生态角色移动，世界持续发生出生和死亡', () =>
   assert.equal(world.creatures.length, start.creatures.length + world.births - world.deaths);
   assert.ok(world.creatures.length <= MAX_POPULATION);
   assert.ok(world.creatures.every(c => c.energy > 0 && c.energy <= 100));
-  assert.ok(world.creatures.every(c => world.terrain.isLand(c.x, c.z)
-    || ((c.role === 'wader' || c.role === 'stalker' || c.form === 'wetland') && world.terrain.isShallow(c.x, c.z))));
+  assert.ok(world.creatures.every(c => world.terrain.canTraverse(c.x, c.z, limbForm(c.genes.aquatic), wingForm(c.genes.aerial))));
   assert.ok(world.resources.every((amount, index) => amount >= 0 && amount <= world.terrain.cells[index].capacity));
   const child = world.creatures.find(c => c.parent !== null);
   assert.ok(child);
@@ -58,7 +58,7 @@ test('扩大的地图提供旧范围以外的陆地和可用浅滩', () => {
 test('同种苔叶兽的湿地型能从陆地进入浅滩', () => {
   const world = new World(DEFAULT_SEED);
   const { terrain } = world;
-  const pace = 0.23;
+  const pace = 0.23 * 0.93;
   const shore = terrain.cells.find(({ x, z }) => terrain.isLand(x, z) && terrain.isShallow(x + pace, z)
     && Math.abs(terrain.height(x, z) - terrain.height(x + pace, z)) < pace * 2.4)!;
   assert.ok(shore);
@@ -68,6 +68,7 @@ test('同种苔叶兽的湿地型能从陆地进入浅滩', () => {
   world.creatures = [grazer];
   const other = World.restore(world.save());
   grazer.form = 'wetland';
+  grazer.genes.aquatic = 0.45;
 
   world.step();
   other.step();
@@ -197,7 +198,7 @@ test('存档可恢复随机状态，拒绝错误版本和异常数据', () => {
   original.track(1);
   advance(original, 400);
   const snapshot = JSON.parse(JSON.stringify(original.save()));
-  assert.equal(snapshot.version, 3);
+  assert.equal(snapshot.version, 4);
   const restored = World.restore(snapshot);
   assert.deepEqual(restored.save(), original.save());
   advance(original, 165);
@@ -226,7 +227,7 @@ test('v1 存档把旧地图资源移到对应坐标并保留个体和血脉', ()
   };
   const migrated = World.restore(oldSave);
   const save = migrated.save();
-  assert.equal(save.version, 3);
+  assert.equal(save.version, 4);
   assert.equal(save.rng, oldSave.rng);
   assert.equal(save.resources.length, GRID_SIZE ** 2);
   assert.equal(save.resources[migrated.terrain.cellAt(creature.x, creature.z)], resources[1073]);
@@ -239,9 +240,11 @@ test('v1 存档把旧地图资源移到对应坐标并保留个体和血脉', ()
   assert.equal(survivor.form, 'ancestral');
   const { form, species, genes, ...originalCreature } = survivor;
   assert.equal(save.species.find(branch => branch.id === species)?.role, creature.role);
-  const { moisture, ...originalGenes } = genes;
+  const { moisture, aquatic, aerial, ...originalGenes } = genes;
   const { genes: oldGenes, ...oldCreature } = creature;
   assert.ok(moisture >= 0 && moisture <= 100);
+  assert.equal(limbForm(aquatic), 'foot');
+  assert.equal(wingForm(aerial), 'wingless');
   assert.deepEqual(originalGenes, oldGenes);
   assert.deepEqual(originalCreature, oldCreature);
   assert.deepEqual(save.census, [{ tick: 0, grazer: 1, hunter: 0, browser: 0, wader: 0, stalker: 0 }]);

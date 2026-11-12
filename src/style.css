@@ -310,6 +310,7 @@ progress::-moz-progress-bar { background: var(--olive); border-radius: 6px; }
 #maturity::-moz-progress-bar { background: #d1b477; }
 .traits { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border-block: 1px solid var(--edge); margin-top: 15px; }
 .individual-traits { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.movement-traits { grid-template-columns: repeat(2, minmax(0, 1fr)); margin-top: 0; border-top: 0; }
 .traits div { padding: 9px 8px 8px; min-width: 0; text-align: center; }
 .traits div + div { border-left: 1px solid var(--edge); }
 .traits dt { color: var(--muted); font-size: 10px; }
@@ -330,9 +331,13 @@ progress::-moz-progress-bar { background: var(--olive); border-radius: 6px; }
 .lineage-actions { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 12px; }
 .lineage-actions label { flex: 1 1 130px; min-width: 0; }
 .lineage-actions select { width: 100%; min-height: 36px; padding: 0 5px; color: var(--text); background: #253228; border: 1px solid #435344; border-radius: 6px; }
+.lineage-comparison { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 12px; }
+.lineage-comparison div { border: 1px solid var(--edge); border-radius: 6px; padding: 9px; min-width: 0; }
+.lineage-comparison dt { color: var(--muted); font-size: 10px; }
+.lineage-comparison dd { margin-top: 4px; color: #e4e6d3; font-size: 11px; line-height: 1.6; white-space: pre-line; overflow-wrap: anywhere; }
 .lineage-list-title { color: #d9dfcb; font-size: 12px; margin-top: 17px; }
 .lineage-list { list-style: none; max-height: 228px; overflow-y: auto; margin: 7px 0 0; padding: 0; }
-.lineage-list li { display: grid; grid-template-columns: minmax(0, 1fr) auto; border-bottom: 1px solid var(--edge); padding: 8px 3px; align-items: center; color: var(--muted); font-size: 11px; }
+.lineage-list li { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.3fr); gap: 8px; border-bottom: 1px solid var(--edge); padding: 8px 3px; align-items: center; color: var(--muted); font-size: 11px; }
 .lineage-list button { background: none; border: none; padding: 1px 0; color: #e2d5aa; text-align: left; font-size: 12px; }
 .lineage-list button:hover:not(:disabled) { text-decoration: underline; }
 .climate-controls { display: grid; gap: 10px; }

@@ -1,5 +1,5 @@
 import { ROLES } from './types.ts';
-import type { Genes, Niche, Species } from './types.ts';
+import type { Adaptation, Genes, Niche, Species } from './types.ts';
 
 const NICHES = {
   'cold-dry': { name: '低温干旱', comfort: 12, moisture: 24 },
@@ -34,7 +34,14 @@ export function nicheName(niche: Niche) {
   return NICHES[niche].name;
 }
 
-export function speciesName(species: Pick<Species, 'role' | 'niche'>) {
+const ADAPTATION_NAMES = { webbed: '涉水', fin: '游水', glider: '滑翔', flyer: '飞行' } satisfies Record<Adaptation, string>;
+
+export function isAdaptation(value: unknown): value is Adaptation {
+  return typeof value === 'string' && Object.hasOwn(ADAPTATION_NAMES, value);
+}
+
+export function speciesName(species: Species) {
   const { name } = ROLES[species.role];
-  return species.niche ? `${nicheName(species.niche)}${name}` : name;
+  const trait = species.adaptation ? ADAPTATION_NAMES[species.adaptation] : species.niche ? nicheName(species.niche) : '';
+  return species.replaces === undefined ? `${trait}${name}` : `继替${trait}${name} · ${species.id}号`;
 }

@@ -1,4 +1,4 @@
-import type { Creature, CreatureForm, Role } from './types.ts';
+import type { CreatureForm, Role } from './types.ts';
 import type { Habitat } from './terrain.ts';
 
 export const FOUNDERS = { grazer: 30, hunter: 6, browser: 20, wader: 20, stalker: 5 } satisfies Record<Role, number>;
@@ -22,7 +22,7 @@ interface HuntingRules {
 
 const HUNTING: Record<'hunter' | 'stalker', HuntingRules> = {
   hunter: { prey: ['grazer', 'browser'], pace: 0.41, sight: 13, reward: 47, chance: 0.31, fallbackFood: 0 },
-  stalker: { prey: ['wader', 'browser'], pace: 0.44, sight: 11, reward: 52, chance: 0.38, fallbackFood: 0.45 },
+  stalker: { prey: ['wader', 'browser'], pace: 0.44, sight: 11, reward: 52, chance: 0.38, fallbackFood: 0.58 },
 };
 
 export const huntingRules = (role: Role) =>
@@ -40,5 +40,14 @@ export function inheritedForm(moisture: number): CreatureForm {
   return 'ancestral';
 }
 
-export const canWade = (creature: Pick<Creature, 'role' | 'form'>) =>
-  creature.role === 'wader' || creature.role === 'stalker' || creature.form === 'wetland';
+const RELATED_ROLES: Record<Role, readonly Role[]> = {
+  grazer: ['browser', 'wader'],
+  hunter: ['stalker', 'browser', 'grazer'],
+  browser: ['grazer', 'wader'],
+  wader: ['grazer', 'browser', 'stalker'],
+  stalker: ['hunter', 'wader', 'browser'],
+};
+
+export function canSucceed(parent: Role, extinct: Role, roleStillPresent: boolean) {
+  return parent === extinct || (!roleStillPresent && RELATED_ROLES[extinct].includes(parent));
+}

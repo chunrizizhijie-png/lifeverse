@@ -1,12 +1,13 @@
 import { ATLAS_SIZE } from './types.ts';
-import type { Biome, MapTile } from './types.ts';
+import type { Biome, LimbForm, MapTile, WingForm } from './types.ts';
+import { fitsHeight, LIMBS } from './adaptations.ts';
 
 export const LEGACY_MAP_HALF = 63;
 export const LEGACY_GRID_SIZE = 42;
 export const MAP_HALF = 99;
 export const GRID_SIZE = 66;
 export const CELL_WIDTH = 2 * MAP_HALF / GRID_SIZE;
-export const LAND_HEIGHT = 0.55;
+export const LAND_HEIGHT = LIMBS.foot.minHeight;
 const SHALLOW_DEPTH = -0.95;
 const TILE_WIDTH = MAP_HALF * 2;
 
@@ -121,7 +122,7 @@ function bridgeHeight(along: number, across: number) {
 }
 
 export type Habitat = 'sea' | 'shallows' | 'shore' | 'meadow' | 'woodland' | 'ridge';
-const HABITAT_CAPACITY = { sea: 0, shallows: 14, shore: 18, meadow: 38, woodland: 49, ridge: 16 };
+const LAND_CAPACITY = { shore: 18, meadow: 38, woodland: 49, ridge: 16 };
 const HABITAT_MOISTURE = { sea: 22, shallows: 22, shore: 16, meadow: -3, woodland: 8, ridge: -20 };
 const BIOME_MOISTURE: Record<Biome, number> = {
   archipelago: 0, desert: -11, forest: 6, highlands: -7, marsh: 10, grassland: -3, tundra: -4,
@@ -135,6 +136,8 @@ export interface Cell {
   z: number;
   region: number;
   capacity: number;
+  water: boolean;
+  growth: number;
 }
 
 export const tileLayoutKey = (tiles: readonly MapTile[]) => tiles.map(tile => `${tile.seed}/${tile.biome}`).join('|');
@@ -187,10 +190,13 @@ export class Terrain {
         const x = (col + 0.5) * CELL_WIDTH - this.mapHalf;
         const z = (row + 0.5) * CELL_WIDTH - this.mapHalf;
         const region = this.tileAt(x, z);
+        const height = this.height(x, z);
         const habitat = this.habitat(x, z, region);
-        const capacity = HABITAT_CAPACITY[habitat];
-        if (this.isLand(x, z)) this.land.push(this.cells.length);
-        this.cells.push({ x, z, region, capacity: capacity * (0.78 + hash(col % GRID_SIZE, row % GRID_SIZE, this.tiles[region].seed) * 0.42) });
+        const water = habitat === 'sea' || habitat === 'shallows';
+        const capacity = water ? height >= LIMBS.webbed.minHeight ? 34 : height >= -5.5 ? 24 : 12 : LAND_CAPACITY[habitat];
+        const growth = height >= LIMBS.webbed.minHeight ? 1 : height >= -5.5 ? 0.56 : 0.24;
+        if (!water) this.land.push(this.cells.length);
+        this.cells.push({ x, z, region, water, growth, capacity: capacity * (0.78 + hash(col % GRID_SIZE, row % GRID_SIZE, this.tiles[region].seed) * 0.42) });
       }
     }
   }
@@ -260,6 +266,14 @@ export class Terrain {
 
   isLand(x: number, z: number) {
     return Math.abs(x) < this.mapHalf && Math.abs(z) < this.mapHalf && this.height(x, z) >= LAND_HEIGHT;
+  }
+
+  inBounds(x: number, z: number) {
+    return Math.abs(x) < this.mapHalf && Math.abs(z) < this.mapHalf;
+  }
+
+  canTraverse(x: number, z: number, limb: LimbForm, wing: WingForm = 'wingless') {
+    return this.inBounds(x, z) && (wing === 'flyer' || fitsHeight(limb, this.height(x, z)));
   }
 
   isShallow(x: number, z: number) {

@@ -29,6 +29,9 @@ export const ROLES = {
 
 export type Role = keyof typeof ROLES;
 export const ROLE_KEYS = Object.keys(ROLES) as Role[];
+export type LimbForm = 'foot' | 'webbed' | 'fin';
+export type WingForm = 'wingless' | 'glider' | 'flyer';
+export type Adaptation = 'webbed' | 'fin' | 'glider' | 'flyer';
 
 export const FORM_NAMES = { ancestral: '原生型', wetland: '湿地型', dryland: '旱地型' } as const;
 export type CreatureForm = keyof typeof FORM_NAMES;
@@ -45,6 +48,8 @@ export interface Genes {
   moisture: number;
   hue: number;
   crest: number;
+  aquatic: number;
+  aerial: number;
 }
 
 export interface Creature {
@@ -84,6 +89,9 @@ export interface Species {
   role: Role;
   niche: Niche | null;
   born: number;
+  adaptation?: Adaptation;
+  extinctAt?: number;
+  replaces?: number;
 }
 export interface SpeciesStatus extends Species { population: number }
 
@@ -106,6 +114,7 @@ export interface Record {
   born: number;
   died: number | null;
   lineages: number[];
+  genes?: Genes;
 }
 
 export interface Bloodline {
@@ -137,7 +146,7 @@ export interface Frame {
 }
 
 export interface Save {
-  version: 3;
+  version: 4;
   seed: number;
   tick: number;
   rng: number;

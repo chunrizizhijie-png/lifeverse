@@ -57,7 +57,7 @@ export function createEvolution(
     </form>
     <section class="species-ancestry" aria-labelledby="species-ancestry-title">
       <h3 id="species-ancestry-title">物种分化图</h3>
-      <p>从五种原种展开。点在世分支可选中一个个体。</p>
+      <p>可遗传的适应会形成新分支。物种灭绝后，幸存血脉可以留下继替物种。点在世分支可选中一个个体。</p>
       <ul class="species-tree" id="species-tree" aria-label="物种祖先与分支"></ul>
     </section>`;
 
@@ -176,7 +176,8 @@ export function createEvolution(
   }
 
   function refreshTree(species: SpeciesStatus[]) {
-    const shape = species.map(item => `${item.id}:${item.parent}:${item.role}:${item.niche}`).join('|');
+    const shape = species.map(item => `${item.id}:${item.parent}:${item.role}:${item.niche}:${item.adaptation}:${item.replaces}`).join('|');
+    const byId = new Map(species.map(item => [item.id, item]));
     if (treeKey !== shape) {
       treeKey = shape;
       rows.clear();
@@ -196,6 +197,8 @@ export function createEvolution(
         pick.type = 'button';
         pick.dataset.species = String(item.id);
         pick.textContent = speciesName(item);
+        const previous = item.replaces === undefined ? undefined : byId.get(item.replaces);
+        if (previous) pick.title = `接替 ${speciesName(previous)}`;
         row.style.setProperty('--species-color', ROLES[item.role].color);
         number.className = 'species-count';
         row.append(pick, number);
@@ -214,13 +217,16 @@ export function createEvolution(
       tree.replaceChildren(...(children.get(null) ?? []).map(addBranch));
     }
     const selectedSpecies = frame?.creatures.find(creature => creature.id === parentId)?.species;
+    const successors = new Set(species.filter(item => item.population > 0).map(item => item.replaces));
     for (const item of species) {
       const row = rows.get(item.id);
       if (!row) continue;
       row.pick.disabled = !item.population;
       row.item.classList.toggle('is-extinct', item.population === 0);
       row.pick.setAttribute('aria-pressed', String(item.id === selectedSpecies));
-      changeText(row.count, item.population ? `${format.format(item.population)} 在世` : item.parent ? '已灭绝' : '无在世');
+      const extinct = item.extinctAt !== undefined || item.parent !== null;
+      changeText(row.count, item.population ? `${format.format(item.population)} 在世`
+        : successors.has(item.id) ? '已灭绝 · 有继替' : extinct ? '已灭绝' : '无在世');
     }
   }
 

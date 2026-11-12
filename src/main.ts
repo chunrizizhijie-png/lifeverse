@@ -1,8 +1,9 @@
 import './style.css';
 import { createMap, createPortrait } from './render/view.ts';
+import { LIMBS, WINGS, limbForm, limbSpeed, wingForm } from './sim/adaptations.ts';
 import { nicheFor, nicheName, speciesName } from './sim/evolution.ts';
 import { BIOMES, creatureName, DEFAULT_SEED, FORM_NAMES, INITIAL_CLIMATE, MINUTES_PER_TICK, populationCounts, ROLE_KEYS, ROLES } from './sim/types.ts';
-import type { Command, Creature, Frame, Gift, ObservedCreature, Species, Speed, WorkerReply } from './sim/types.ts';
+import type { Command, Creature, Frame, Gift, ObservedCreature, Record as LineageRecord, Species, Speed, WorkerReply } from './sim/types.ts';
 import { MATURE_AGE, validSeed } from './sim/world.ts';
 import { createAtlas } from './ui/atlas.ts';
 import { makeChart } from './ui/chart.ts';
@@ -79,12 +80,14 @@ let pickerKey = '';
 let portraitKey = '';
 let lineageKey = '';
 let lineagePickerKey = '';
+let comparedRecord: number | null = null;
+let comparedRoot: number | null = null;
 let noticeTimer = 0;
 let lastGift: { id: number; message: string } | null = null;
 const current = () => frame?.creatures.find(c => c.id === selected);
 const individualName = (creature: Creature) => {
   const branch = species.get(creature.species);
-  return branch?.niche ? speciesName(branch) : creatureName(creature.role, creature.form);
+  return branch && branch.parent !== null ? speciesName(branch) : creatureName(creature.role, creature.form);
 };
 
 function notice(message: string) {
@@ -154,7 +157,7 @@ function refreshIndividual() {
   const maturity = creature ? Math.min(100, creature.age / MATURE_AGE * 100) : undefined;
   const imageKey = creature
     ? [creature.id, creature.role, creature.form, creature.genes.hue, creature.genes.crest, creature.genes.size,
-      creature.genes.speed, Math.floor(maturity! / 10)].join('|')
+      creature.genes.speed, creature.genes.aquatic, creature.genes.aerial, Math.floor(maturity! / 10)].join('|')
     : '-';
   if (imageKey !== portraitKey) {
     drawPortrait(creature);
@@ -166,6 +169,12 @@ function refreshIndividual() {
   update('trait-speed', creature ? `${creature.genes.speed.toFixed(2)}×` : '—');
   update('trait-comfort', creature ? `${creature.genes.comfort.toFixed(1)}°C` : '—');
   update('trait-moisture', creature ? percent(creature.genes.moisture) : '—');
+  const genes = creature?.genes;
+  const wing = genes && WINGS[wingForm(genes.aerial)];
+  update('trait-limb', genes ? LIMBS[limbForm(genes.aquatic)].name : '—');
+  update('trait-wing', wing ? wing.name : '—');
+  element('movement-note').hidden = !genes;
+  if (genes && wing) update('movement-note', `${limbSpeed(genes)} · ${wing.ability}`);
   localClimate.hidden = !creature;
   if (creature) update('local-climate', `遗传倾向 ${nicheName(nicheFor(creature.genes))} · 当地湿度 ${percent(creature.localMoisture)} · 气候耗能 ${creature.stress.toFixed(2)} / 步`);
   for (const button of gifts) {
@@ -179,6 +188,26 @@ function refreshIndividual() {
   update('track-from-lineage', creature ? `追踪 ${labelId(creature.id)}` : '追踪当前个体');
   map.select(selected);
   refreshPicker(frame?.creatures ?? []);
+}
+
+function compareLineage(next: Frame) {
+  const root = next.bloodline?.root;
+  const ancestor = next.branch.find(record => record.id === root);
+  const descendant = next.branch.find(record => record.id === comparedRecord)
+    ?? next.branch.reduce<LineageRecord | undefined>((best, record) => {
+      if (record.id === root || !record.genes) return best;
+      return !best || record.generation >= best.generation ? record : best;
+    }, undefined);
+  const describe = (record?: LineageRecord) => {
+    if (!record) return '—';
+    const { genes } = record;
+    const label = `${labelId(record.id)} · 第 ${record.generation} 代`;
+    return genes
+      ? `${label}\n${LIMBS[limbForm(genes.aquatic)].name} · ${WINGS[wingForm(genes.aerial)].name}\n${limbSpeed(genes)}`
+      : `${label}\n旧档案未记录遗传形态`;
+  };
+  update('lineage-ancestor', describe(ancestor));
+  update('lineage-descendant', describe(descendant));
 }
 
 function refreshLineage(next: Frame) {
@@ -201,6 +230,11 @@ function refreshLineage(next: Frame) {
   update('descendants', fmt.format(bloodline.total));
   update('descendants-alive', fmt.format(bloodline.living));
   update('descendants-generation', `第 ${bloodline.generation} 代`);
+  if (comparedRoot !== bloodline.root) {
+    comparedRoot = bloodline.root;
+    comparedRecord = null;
+  }
+  compareLineage(next);
   const key = `${bloodline.root}|${next.branch.map(record => `${record.id}:${record.died}:${record.species}`).join(',')}`;
   if (key === lineageKey) return;
   lineageKey = key;
@@ -210,11 +244,18 @@ function refreshLineage(next: Frame) {
     select.type = 'button';
     select.textContent = record.id === bloodline.root ? `${labelId(record.id)} · 神选者`
       : `${labelId(record.id)} · 来自 ${labelId(record.parent!)}`;
-    select.disabled = record.died !== null;
-    select.addEventListener('click', () => choose(record.id, true));
+    select.addEventListener('click', () => {
+      comparedRecord = record.id === bloodline.root ? null : record.id;
+      if (record.died === null) choose(record.id);
+      if (frame) compareLineage(frame);
+    });
     const info = document.createElement('span');
     const branch = species.get(record.species);
-    info.textContent = `${branch?.niche ? speciesName(branch) : FORM_NAMES[record.form]} · 第 ${record.generation} 代 · ${record.died === null ? '在世' : '已死亡'}`;
+    const form = record.genes
+      ? `${LIMBS[limbForm(record.genes.aquatic)].short} · ${WINGS[wingForm(record.genes.aerial)].short}`
+      : FORM_NAMES[record.form];
+    info.textContent = `${form} · 第 ${record.generation} 代 · ${record.died === null ? '在世' : '已死亡'}`;
+    if (branch) info.title = speciesName(branch);
     row.append(select, info);
     return row;
   });
@@ -253,6 +294,7 @@ function refreshClimate(next: Frame) {
 
 function refresh(next: Frame, epoch: number) {
   if (currentEpoch !== epoch) {
+    comparedRoot = comparedRecord = null;
     currentEpoch = epoch;
     activeRegion = 0;
     selected = next.creatures[0]?.id ?? null;
@@ -286,6 +328,15 @@ function refresh(next: Frame, epoch: number) {
   for (const role of ROLE_KEYS) update(`${role}-count`, fmt.format(counts[role]));
   update('wetland-count', fmt.format(next.creatures.filter(c => c.form === 'wetland').length));
   update('dryland-count', fmt.format(next.creatures.filter(c => c.form === 'dryland').length));
+  const limbs = { foot: 0, webbed: 0, fin: 0 };
+  const wings = { wingless: 0, glider: 0, flyer: 0 };
+  for (const creature of next.creatures) {
+    limbs[limbForm(creature.genes.aquatic)]++;
+    wings[wingForm(creature.genes.aerial)]++;
+  }
+  for (const limb of Object.keys(limbs) as (keyof typeof limbs)[]) update(`${limb}-count`, fmt.format(limbs[limb]));
+  update('glider-count', fmt.format(wings.glider));
+  update('flyer-count', fmt.format(wings.flyer));
   update('population-period', next.census[0]?.tick ? '最近记录' : '自世界生成');
   drawChart(next.census, { tick: next.tick, ...counts });
 }
