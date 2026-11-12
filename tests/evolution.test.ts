@@ -68,14 +68,16 @@ test('血脉根个体死亡后可选在世后代延续，也可从存档遗传�
   const restored = World.restore(world.save());
   frame = restored.frame(false, 1);
   assert.equal(frame.bloodline?.living, 0);
-  assert.deepEqual(frame.bloodline?.archive?.genes, root.genes);
+  assert.equal(frame.bloodline?.archive?.id, grandchild.id);
+  assert.deepEqual(frame.bloodline?.archive?.genes, grandchild.genes);
 
-  const result = restored.breedLineage(root.id, 0, 'cold-wet', 2);
+  const result = restored.breedLineage(root.id, 0, 'hot-wet', 2);
   assert.match(result, /档案复育/);
   const recovered = restored.creatures.slice(-2);
-  assert.ok(recovered.every(creature => creature.parent === root.id && nicheFor(creature.genes) === 'cold-wet'));
+  assert.ok(recovered.every(creature => creature.parent === grandchild.id && creature.species === grandchild.species
+    && nicheFor(creature.genes) === 'hot-wet'));
   frame = restored.frame(false, 1);
   assert.equal(frame.bloodline?.living, 2);
   assert.equal(frame.bloodline?.total, 4);
-  assert.equal(frame.bloodline?.generation, grandchild.generation);
+  assert.equal(frame.bloodline?.generation, grandchild.generation + 1);
 });

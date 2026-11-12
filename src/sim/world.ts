@@ -134,7 +134,7 @@ export class World {
   get rainTrend() { return this.regions[0].rainTrend; }
   get bloodline() { return this.activeLineage === null ? null : this.lineages.get(this.activeLineage) ?? null; }
   get capacity() { return MAX_POPULATION * this.tiles.length; }
-  private get recordLimit() { return Math.max(MAX_RECORDS * this.tiles.length, this.creatures.length + this.lineages.size); }
+  private get recordLimit() { return Math.max(MAX_RECORDS * this.tiles.length, this.creatures.length + this.lineages.size * 2); }
 
   private sites(region: number) {
     const { cells } = this.terrain;
@@ -269,6 +269,7 @@ export class World {
       if (!bloodline) continue;
       bloodline.total++;
       bloodline.generation = Math.max(bloodline.generation, creature.generation);
+      this.archiveMember(bloodline, creature);
     }
     return creature;
   }
@@ -438,9 +439,10 @@ export class World {
   }
 
   private prune() {
+    const archived = new Set([...this.lineages.values()].map(line => line.archive?.id ?? line.root));
     for (const [id, record] of this.records) {
       if (this.records.size <= this.recordLimit) break;
-      if (record.died !== null && !this.lineages.has(id)) this.records.delete(id);
+      if (record.died !== null && !this.lineages.has(id) && !archived.has(id)) this.records.delete(id);
     }
   }
 
@@ -471,6 +473,10 @@ export class World {
     const { comfort, moisture } = creature.genes;
     creature.genes.comfort = clamp(comfort + clamp(localTemperature - comfort, -8, 8), ...LIMITS.comfort);
     creature.genes.moisture = clamp(moisture + clamp(localMoisture - moisture, -24, 24), ...LIMITS.moisture);
+    for (const root of this.records.get(id)?.lineages ?? []) {
+      const line = this.lineages.get(root);
+      if (line) this.archiveMember(line, creature);
+    }
     if (Math.abs(comfort - creature.genes.comfort) < 0.05 && Math.abs(moisture - creature.genes.moisture) < 0.5) {
       return `${name} 的适温和适湿已接近当地条件。`;
     }
@@ -498,9 +504,19 @@ export class World {
       if (record.id !== id) total++;
       generation = Math.max(generation, record.generation);
     }
-    const founder = this.creatures.find(c => c.id === id);
-    const archive = founder ? { genes: { ...founder.genes }, species: founder.species, generation: founder.generation } : undefined;
-    this.lineages.set(id, { root: id, role: root.role, total, living: 0, generation, ...(archive ? { archive } : {}) });
+    const line = { root: id, role: root.role, total, living: 0, generation };
+    this.lineages.set(id, line);
+    for (const creature of this.creatures) {
+      if (this.records.get(creature.id)?.lineages.includes(id)) this.archiveMember(line, creature);
+    }
+  }
+
+  private archiveMember(line: Bloodline, creature: Creature) {
+    const prior = line.archive;
+    if (prior && creature.id !== (prior.id ?? line.root) && creature.generation <= prior.generation) return;
+    line.archive = {
+      id: creature.id, genes: { ...creature.genes }, species: creature.species, generation: creature.generation,
+    };
   }
 
   private spaceFor(region: number, count: number) {
@@ -553,7 +569,8 @@ export class World {
     if (!integer(region, 0, this.tiles.length - 1)) return '请选择有效地块。';
     const position = this.terrain.tileCenter(region);
     const cell = this.terrain.cells[this.nearestCell(this.landCells[region], position.x, position.z)];
-    return this.nurture({ id: root, role: line.role, ...line.archive, x: cell.x, z: cell.z }, region, niche, count, true);
+    const { id = root, genes, species, generation } = line.archive;
+    return this.nurture({ id, role: line.role, genes, species, generation, x: cell.x, z: cell.z }, region, niche, count, true);
   }
 
   introduce(role: Role, region: number, count: number) {
@@ -682,7 +699,9 @@ export class World {
       }
       for (const line of parcel.lineages.values()) {
         const root = idOffset + line.root;
-        const archive = line.archive && { ...line.archive, species: branchIds.get(line.archive.species)! };
+        const archive = line.archive && {
+          ...line.archive, id: (line.archive.id ?? line.root) + idOffset, species: branchIds.get(line.archive.species)!,
+        };
         world.lineages.set(root, { ...line, root, ...(archive ? { archive } : {}) });
       }
       if (world.activeLineage === null && parcel.activeLineage !== null) world.activeLineage = idOffset + parcel.activeLineage;
@@ -724,7 +743,7 @@ export class World {
       genes: { ...c.genes, moisture: c.genes.moisture ?? TRAIT_CENTERS[c.role].moisture },
     }));
     const founder = creatures.find(c => c.id === root);
-    const archive = founder && { genes: { ...founder.genes }, species: founder.species, generation: founder.generation };
+    const archive = founder && { id: founder.id, genes: { ...founder.genes }, species: founder.species, generation: founder.generation };
     return {
       version: 3, seed: save.seed, rng: save.rng, tick: save.tick, nextId: save.nextId, births: save.births, deaths: save.deaths,
       tiles: this.tiles, regions: [{ climate: save.climate, rainTrend: save.rainTrend ?? save.climate?.rain }],
@@ -800,11 +819,13 @@ export class World {
     }
     for (const line of save.lineages) {
       const founder = world.records.get(line?.root);
+      const archived = line?.archive && world.records.get(line.archive.id ?? line.root);
       if (!line || !founder?.lineages.includes(line.root) || founder.role !== line.role || world.lineages.has(line.root)
         || !integer(line.total, 0, save.births) || !integer(line.living, 0, world.capacity)
         || !integer(line.generation, founder.generation, save.nextId)
-        || (line.archive !== undefined && (!line.archive || !validGenes(line.archive.genes)
-          || line.archive.species !== founder.species || line.archive.generation !== founder.generation))) {
+        || (line.archive !== undefined && (!line.archive || !archived?.lineages.includes(line.root)
+          || !validGenes(line.archive.genes) || line.archive.species !== archived.species
+          || line.archive.generation !== archived.generation))) {
         throw new Error('存档血脉有误。');
       }
       world.lineages.set(line.root, structuredClone(line));

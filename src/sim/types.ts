@@ -114,7 +114,7 @@ export interface Bloodline {
   total: number;
   living: number;
   generation: number;
-  archive?: { genes: Genes; species: number; generation: number };
+  archive?: { id?: number; genes: Genes; species: number; generation: number };
 }
 
 export interface Frame {
