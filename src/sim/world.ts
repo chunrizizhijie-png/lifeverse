@@ -1,7 +1,8 @@
 import { canWade, forageQuality, FOUNDERS, huntingRules, inheritedForm, TRAIT_CENTERS } from './ecology.ts';
-import { clamp, GRID_SIZE, LAND_HEIGHT, LEGACY_GRID_SIZE, MAP_HALF, Terrain } from './terrain.ts';
-import { creatureName, DEFAULT_SEED, FORM_NAMES, INITIAL_CLIMATE, MAX_POPULATION, populationCounts, ROLE_KEYS } from './types.ts';
-import type { Bloodline, Census, Climate, Creature, Frame, Genes, Gift, Record as LineageRecord, Role, Save, Speed } from './types.ts';
+import { isNiche, nicheFor, nicheTargets, speciesName } from './evolution.ts';
+import { clamp, GRID_SIZE, LAND_HEIGHT, LEGACY_GRID_SIZE, Terrain } from './terrain.ts';
+import { ATLAS_SIZE, BIOMES, creatureName, DEFAULT_SEED, FORM_NAMES, MAX_POPULATION, populationCounts, ROLE_KEYS } from './types.ts';
+import type { Bloodline, Census, Climate, Creature, Frame, Genes, Gift, Record as LineageRecord, MapTile, Niche, ParcelSource, RegionClimate, Role, Save, Species, Speed } from './types.ts';
 
 export const MATURE_AGE = 70;
 const MAX_RECORDS = 2200;
@@ -24,12 +25,55 @@ const isRole = (role: unknown): role is Role => ROLE_KEYS.includes(role as Role)
 const isForm = (form: unknown): form is Creature['form'] => typeof form === 'string' && Object.hasOwn(FORM_NAMES, form);
 const isLegacyRole = (role: unknown): role is 'grazer' | 'hunter' => role === 'grazer' || role === 'hunter';
 const distance2 = (a: Creature, b: Creature) => (a.x - b.x) ** 2 + (a.z - b.z) ** 2;
-
-type LegacySave = Omit<Save, 'version' | 'rainTrend' | 'creatures' | 'records' | 'census'> & {
-  version: 1;
-  creatures: (Omit<Creature, 'form' | 'genes'> & { genes: Omit<Genes, 'moisture'> })[];
-  records: Omit<LineageRecord, 'form'>[];
-  census: Pick<Census, 'tick' | 'grazer' | 'hunter'>[];
+const rootSpecies = (role: Role) => ROLE_KEYS.indexOf(role) + 1;
+const isTile = (tile: unknown): tile is MapTile => {
+  if (!tile || typeof tile !== 'object' || !('seed' in tile) || !('biome' in tile)) return false;
+  return validSeed(tile.seed) && typeof tile.biome === 'string' && Object.hasOwn(BIOMES, tile.biome);
+};
+const validGenes = (genes: Genes | undefined) => !!genes && GENES.every(key => {
+  const [min, max] = LIMITS[key];
+  return bounds(genes[key], min, max);
+});
+const NEIGHBOR_BIN = 18;
+function nearbyGroups(creatures: Creature[], mapHalf: number) {
+  const stride = Math.ceil(mapHalf * 2 / NEIGHBOR_BIN) + 2;
+  const axis = (position: number) => Math.floor((position + mapHalf) / NEIGHBOR_BIN) + 1;
+  const buckets = new Map<number, Creature[]>();
+  for (const creature of creatures) {
+    const key = axis(creature.z) * stride + axis(creature.x);
+    const bucket = buckets.get(key);
+    if (bucket) bucket.push(creature);
+    else buckets.set(key, [creature]);
+  }
+  const grouped = new Map<number, Creature[]>();
+  return (creature: Creature) => {
+    const key = axis(creature.z) * stride + axis(creature.x);
+    const cached = grouped.get(key);
+    if (cached) return cached;
+    const near: Creature[] = [];
+    for (let z = -1; z <= 1; z++) {
+      for (let x = -1; x <= 1; x++) {
+        const bucket = buckets.get(key + z * stride + x);
+        if (bucket) near.push(...bucket);
+      }
+    }
+    grouped.set(key, near);
+    return near;
+  };
+}
+type Parent = Pick<Creature, 'id' | 'role' | 'species' | 'generation' | 'x' | 'z' | 'genes'>;
+type PreviousCreature = Omit<Creature, 'species' | 'form' | 'genes'> & {
+  form?: Creature['form'];
+  genes: Omit<Genes, 'moisture'> & { moisture?: number };
+};
+type PreviousSave = Omit<Save, 'version' | 'tiles' | 'regions' | 'creatures' | 'records' | 'census' | 'activeLineage' | 'lineages' | 'species'> & {
+  version: 1 | 2;
+  climate: Climate;
+  rainTrend?: number;
+  creatures: PreviousCreature[];
+  records: (Omit<LineageRecord, 'species' | 'form' | 'lineages'> & { form?: Creature['form']; tracked: boolean })[];
+  census: (Pick<Census, 'tick' | 'grazer' | 'hunter'> & Partial<Census>)[];
+  bloodline: Bloodline | null;
 };
 
 export function validSeed(seed: unknown): seed is number {
@@ -39,8 +83,8 @@ export function validSeed(seed: unknown): seed is number {
 export class World {
   readonly seed: number;
   readonly terrain: Terrain;
-  climate: Climate = { ...INITIAL_CLIMATE };
-  rainTrend: number = INITIAL_CLIMATE.rain;
+  readonly tiles: MapTile[];
+  regions: RegionClimate[];
   creatures: Creature[] = [];
   resources: Float64Array;
   records = new Map<number, LineageRecord>();
@@ -48,28 +92,57 @@ export class World {
   births = 0;
   deaths = 0;
   census: Census[] = [];
-  bloodline: Bloodline | null = null;
-  private readonly productiveCells: number[];
+  lineages = new Map<number, Bloodline>();
+  activeLineage: number | null = null;
+  species = new Map<number, Species>();
+  private readonly productiveCells: number[][];
+  private readonly landCells: number[][];
   private rng: number;
   private nextId = 1;
 
-  constructor(seed = DEFAULT_SEED, populate = true) {
-    if (!validSeed(seed)) throw new Error('世界种子超出范围');
+  constructor(seed = DEFAULT_SEED, populate = true, tiles: readonly MapTile[] = [{ seed, biome: 'archipelago' }]) {
+    if (!validSeed(seed) || (tiles.length !== 1 && tiles.length !== ATLAS_SIZE) || !tiles.every(isTile)) {
+      throw new Error('地图配置有误。请检查地貌和种子。');
+    }
     this.seed = seed;
     this.rng = seed;
-    this.terrain = new Terrain(seed);
-    this.productiveCells = this.terrain.cells.flatMap((cell, index) => cell.capacity > 0 ? [index] : []);
+    this.tiles = tiles.map(tile => ({ ...tile }));
+    this.regions = tiles.map(({ biome }) => ({
+      climate: { ...BIOMES[biome].climate }, rainTrend: BIOMES[biome].climate.rain,
+    }));
+    this.terrain = new Terrain(seed, this.tiles);
+    this.productiveCells = tiles.map(() => []);
+    this.landCells = tiles.map(() => []);
+    for (const index of this.terrain.land) {
+      const { x, z } = this.terrain.cells[index];
+      this.landCells[this.terrain.tileAt(x, z)].push(index);
+    }
+    this.terrain.cells.forEach(({ x, z, capacity }, index) => {
+      if (capacity > 0) this.productiveCells[this.terrain.tileAt(x, z)].push(index);
+    });
+    for (const role of ROLE_KEYS) {
+      const id = rootSpecies(role);
+      this.species.set(id, { id, parent: null, role, niche: null, born: 0 });
+    }
     this.resources = Float64Array.from(this.terrain.cells, cell => cell.capacity * (0.60 + this.random() * 0.38));
     if (!populate) return;
-    this.populate();
+    for (let region = 0; region < tiles.length; region++) this.populate(region);
     this.sample();
   }
 
-  private populate() {
-    const { cells, land } = this.terrain;
+  get climate() { return this.regions[0].climate; }
+  get rainTrend() { return this.regions[0].rainTrend; }
+  get bloodline() { return this.activeLineage === null ? null : this.lineages.get(this.activeLineage) ?? null; }
+  get capacity() { return MAX_POPULATION * this.tiles.length; }
+  private get recordLimit() { return Math.max(MAX_RECORDS * this.tiles.length, this.creatures.length + this.lineages.size); }
+
+  private sites(region: number) {
+    const { cells } = this.terrain;
+    const land = this.landCells[region];
+    const { x: centerX, z: centerZ } = this.terrain.tileCenter(region);
     const central = land.filter(i => {
       const { x, z, capacity } = cells[i];
-      return Math.abs(x) < 48 && Math.abs(z) < 40 && capacity > 23;
+      return Math.abs(x - centerX) < 48 && Math.abs(z - centerZ) < 40 && capacity > 23;
     });
     const grazing = central.length ? central : land;
     const browsing = land.filter(i => {
@@ -77,24 +150,37 @@ export class World {
       const habitat = this.terrain.habitat(x, z);
       return habitat === 'woodland' || habitat === 'ridge';
     });
-    const shore = this.productiveCells.filter(i => {
+    const shore = this.productiveCells[region].filter(i => {
       const { x, z } = cells[i];
       return this.terrain.isShallow(x, z) || this.terrain.habitat(x, z) === 'shore';
     });
-    const shoreLand = land.filter(i => this.terrain.height(cells[i].x, cells[i].z) < 4 && Math.abs(cells[i].x) < 55);
+    const shoreLand = land.filter(i => this.terrain.height(cells[i].x, cells[i].z) < 4 && Math.abs(cells[i].x - centerX) < 55);
     const habitat = { grazer: grazing, hunter: grazing, browser: browsing, wader: shore, stalker: shoreLand };
-    const first = grazing.reduce((nearest, index) => {
-      const { x, z } = cells[index];
-      const { x: a, z: b } = cells[nearest];
-      return (x - 8) ** 2 + (z - 13) ** 2 < (a - 8) ** 2 + (b - 13) ** 2 ? index : nearest;
-    }, grazing[0]);
+    for (const role of ROLE_KEYS) if (!habitat[role].length) habitat[role] = land;
+    return habitat;
+  }
+
+  private populate(region: number) {
+    const habitat = this.sites(region);
+    const center = this.terrain.tileCenter(region);
+    const first = this.nearestCell(habitat.grazer, center.x + 8, center.z + 13);
     for (const role of ROLE_KEYS) {
-      const sites = habitat[role].length ? habitat[role] : land;
       for (let i = 0; i < FOUNDERS[role]; i++) {
-        const index = role === 'grazer' && i === 0 ? first : this.pick(sites);
+        const index = role === 'grazer' && i === 0 ? first : this.pick(habitat[role]);
         this.creatures.push(this.spawn(role, index));
       }
     }
+  }
+
+  private nearestCell(indices: number[], x: number, z: number) {
+    let nearest = indices[0];
+    let distance = Infinity;
+    for (const index of indices) {
+      const cell = this.terrain.cells[index];
+      const d2 = (cell.x - x) ** 2 + (cell.z - z) ** 2;
+      if (d2 < distance) { distance = d2; nearest = index; }
+    }
+    return nearest;
   }
 
   private random() {
@@ -133,32 +219,56 @@ export class World {
     };
   }
 
-  private spawn(role: Role, index: number, parent?: Creature) {
+  private descendantSpecies(parent: Parent, genes: Genes) {
+    const niche = nicheFor(genes);
+    if (niche === 'mild-normal' || nicheFor(parent.genes) !== niche) return parent.species;
+    let ancestor = this.species.get(parent.species);
+    while (ancestor) {
+      if (ancestor.niche === niche) return parent.species;
+      ancestor = ancestor.parent === null ? undefined : this.species.get(ancestor.parent);
+    }
+    const branch = [...this.species.values()].find(s => s.parent === parent.species && s.niche === niche);
+    if (branch) return branch.id;
+    const id = this.species.size + 1;
+    this.species.set(id, { id, parent: parent.species, role: parent.role, niche, born: this.tick });
+    return id;
+  }
+
+  private spawn(role: Role, index: number, parent?: Parent, support?: { niche: Niche | null }) {
     const { x, z } = this.terrain.cells[index];
     const genes = parent ? this.inherit(parent.genes) : this.foundingGenes(role);
+    if (parent && support?.niche) {
+      const target = nicheTargets(support.niche);
+      genes.comfort = clamp(target.comfort + (genes.comfort - parent.genes.comfort) * 0.3, ...LIMITS.comfort);
+      genes.moisture = clamp(target.moisture + (genes.moisture - parent.genes.moisture) * 0.3, ...LIMITS.moisture);
+    }
     const form = parent ? inheritedForm(genes.moisture) : 'ancestral';
+    const species = parent ? this.descendantSpecies(parent, genes) : rootSpecies(role);
     const creature: Creature = {
       id: this.nextId++,
       role,
       form,
+      species,
       parent: parent?.id ?? null,
       generation: parent ? parent.generation + 1 : 1,
       x: parent?.x ?? x,
       z: parent?.z ?? z,
       angle: this.random() * TAU,
       age: parent ? 0 : 35 + Math.floor(this.random() * 86),
-      energy: parent ? 42 : 59 + this.random() * 29,
+      energy: parent ? support ? 82 : 42 : 59 + this.random() * 29,
       cooldown: parent ? 65 : Math.floor(this.random() * 74),
       genes,
     };
-    const tracked = !!parent && !!this.records.get(parent.id)?.tracked;
+    const lineages = parent ? [...(this.records.get(parent.id)?.lineages ?? [])] : [];
     this.records.set(creature.id, {
-      id: creature.id, parent: creature.parent, role, form, generation: creature.generation,
-      born: this.tick, died: null, tracked,
+      id: creature.id, parent: creature.parent, role, form, species, generation: creature.generation,
+      born: this.tick, died: null, lineages,
     });
-    if (tracked && this.bloodline) {
-      this.bloodline.total++;
-      this.bloodline.generation = Math.max(this.bloodline.generation, creature.generation);
+    for (const root of lineages) {
+      const bloodline = this.lineages.get(root);
+      if (!bloodline) continue;
+      bloodline.total++;
+      bloodline.generation = Math.max(bloodline.generation, creature.generation);
     }
     return creature;
   }
@@ -169,8 +279,9 @@ export class World {
 
   private conditions(creature: Creature) {
     const height = this.terrain.height(creature.x, creature.z);
-    const localTemperature = this.climate.temperature - height * 0.22;
-    const rainfall = this.climate.rain * 0.65 + this.rainTrend * 0.35;
+    const region = this.regions[this.terrain.tileAt(creature.x, creature.z)];
+    const localTemperature = region.climate.temperature - height * 0.22;
+    const rainfall = region.climate.rain * 0.65 + region.rainTrend * 0.35;
     const localMoisture = clamp(rainfall + this.terrain.moistureOffset(creature.x, creature.z), 0, 100);
     const heatStress = Math.max(0, Math.abs(creature.genes.comfort - localTemperature) - 4) * 0.057;
     const moistureStress = Math.max(0, Math.abs(creature.genes.moisture - localMoisture) - 12) * 0.009;
@@ -264,15 +375,21 @@ export class World {
 
   step() {
     this.tick++;
-    const { rain, temperature } = this.climate;
-    this.rainTrend += (rain - this.rainTrend) / 180;
-    const regrowth = (0.051 + this.rainTrend * 0.00145) * clamp(1 - Math.abs(temperature - 23) / 36, 0.34, 1);
-    for (const i of this.productiveCells) {
-      const capacity = this.terrain.cells[i].capacity;
-      this.resources[i] = Math.min(capacity, this.resources[i] + regrowth);
+    for (let region = 0; region < this.regions.length; region++) {
+      const conditions = this.regions[region];
+      const { rain, temperature } = conditions.climate;
+      conditions.rainTrend += (rain - conditions.rainTrend) / 180;
+      const regrowth = (0.051 + conditions.rainTrend * 0.00145) * clamp(1 - Math.abs(temperature - 23) / 36, 0.34, 1);
+      for (const i of this.productiveCells[region]) {
+        const capacity = this.terrain.cells[i].capacity;
+        this.resources[i] = Math.min(capacity, this.resources[i] + regrowth);
+      }
     }
     const prey = this.creatures.filter(creature => !huntingRules(creature.role));
     const hunters = this.creatures.filter(creature => huntingRules(creature.role));
+    const nearPrey = this.tiles.length === 1 ? () => prey : nearbyGroups(prey, this.terrain.mapHalf);
+    const nearHunters = this.tiles.length === 1 ? () => hunters : nearbyGroups(hunters, this.terrain.mapHalf);
+    const regionalPopulation = this.regionPopulations();
     const young: Creature[] = [];
     for (const creature of this.creatures) {
       if (creature.energy <= 0) continue;
@@ -285,18 +402,21 @@ export class World {
       creature.energy -= upkeep * (rules ? 0.66 : 1) + stress;
       if (creature.age > 780 + genes.size * 160) creature.energy -= 1.9;
       if (creature.energy <= 0) continue;
-      if (rules) this.hunt(creature, prey, rules);
-      else this.graze(creature, hunters);
+      if (rules) this.hunt(creature, nearPrey(creature), rules);
+      else this.graze(creature, nearHunters(creature));
       creature.energy = Math.min(100, creature.energy);
       const threshold = rules ? 89 : 77;
-      const pressure = (this.creatures.length + young.length) / MAX_POPULATION;
+      const region = this.terrain.tileAt(creature.x, creature.z);
+      const pressure = regionalPopulation[region] / MAX_POPULATION;
       const chance = (rules ? 0.039 : 0.065) * (1 - pressure ** (rules ? 6 : 3));
       if (creature.age >= MATURE_AGE && creature.cooldown === 0 && creature.energy >= threshold
-        && pressure < 1 && (creature.role === 'wader' || this.terrain.isLand(creature.x, creature.z))
+        && pressure < 1 && this.creatures.length + young.length < this.capacity
+        && (creature.role === 'wader' || this.terrain.isLand(creature.x, creature.z))
         && this.random() < chance) {
         creature.energy -= 43;
         creature.cooldown = rules ? 145 : 95;
         young.push(this.spawn(creature.role, this.terrain.cellAt(creature.x, creature.z), creature));
+        regionalPopulation[region]++;
         this.births++;
       }
     }
@@ -308,13 +428,19 @@ export class World {
       return false;
     }).concat(young);
     if (this.tick % 18 === 0) this.sample();
-    if (this.records.size > MAX_RECORDS) this.prune();
+    if (this.records.size > this.recordLimit) this.prune();
+  }
+
+  private regionPopulations() {
+    const counts = this.tiles.map(() => 0);
+    for (const creature of this.creatures) counts[this.terrain.tileAt(creature.x, creature.z)]++;
+    return counts;
   }
 
   private prune() {
     for (const [id, record] of this.records) {
-      if (this.records.size <= MAX_RECORDS) break;
-      if (record.died !== null && id !== this.bloodline?.root) this.records.delete(id);
+      if (this.records.size <= this.recordLimit) break;
+      if (record.died !== null && !this.lineages.has(id)) this.records.delete(id);
     }
   }
 
@@ -352,143 +478,353 @@ export class World {
     return `${name} 的适温 ${comfort.toFixed(1)} → ${creature.genes.comfort.toFixed(1)}°C，适湿 ${Math.round(moisture)}% → ${Math.round(creature.genes.moisture)}%。每步环境耗能 ${stress.toFixed(2)} → ${current.toFixed(2)}，性状可遗传。`;
   }
 
-  setClimate(patch: Partial<Climate>) {
-    if (bounds(patch.temperature, 5, 38)) this.climate.temperature = patch.temperature;
-    if (bounds(patch.rain, 10, 100)) this.climate.rain = patch.rain;
+  setClimate(patch: Partial<Climate>, region = 0) {
+    const target = this.regions[region]?.climate;
+    if (!target) return;
+    if (bounds(patch.temperature, 5, 38)) target.temperature = patch.temperature;
+    if (bounds(patch.rain, 10, 100)) target.rain = patch.rain;
   }
 
   track(id: number) {
-    if (this.bloodline?.root === id) return;
     const root = this.records.get(id);
     if (!root) return;
+    this.activeLineage = id;
+    if (this.lineages.has(id)) return;
     let total = 0;
     let generation = root.generation;
     for (const record of this.records.values()) {
-      record.tracked = record.id === id || (record.parent !== null && !!this.records.get(record.parent)?.tracked);
-      if (!record.tracked) continue;
+      if (record.id !== id && (record.parent === null || !this.records.get(record.parent)?.lineages.includes(id))) continue;
+      record.lineages.push(id);
       if (record.id !== id) total++;
       generation = Math.max(generation, record.generation);
     }
-    this.bloodline = { root: id, role: root.role, total, living: 0, generation };
+    const founder = this.creatures.find(c => c.id === id);
+    const archive = founder ? { genes: { ...founder.genes }, species: founder.species, generation: founder.generation } : undefined;
+    this.lineages.set(id, { root: id, role: root.role, total, living: 0, generation, ...(archive ? { archive } : {}) });
+  }
+
+  private spaceFor(region: number, count: number) {
+    return Math.max(0, Math.min(count, this.capacity - this.creatures.length, MAX_POPULATION - this.regionPopulations()[region]));
+  }
+
+  private nurture(parent: Parent, region: number, niche: Niche | null, count: number, fromArchive = false) {
+    if (!integer(region, 0, this.tiles.length - 1) || !integer(count, 1, 6) || (niche !== null && !isNiche(niche))) {
+      return '请选择有效地块、培育方向和数量。';
+    }
+    const number = this.spaceFor(region, count);
+    if (number === 0) return '此地块或世界种群已满。';
+    const previousSpecies = this.species.size;
+    const center = this.terrain.tileCenter(region);
+    const fromLocalLand = this.terrain.tileAt(parent.x, parent.z) === region && this.terrain.isLand(parent.x, parent.z);
+    const index = fromLocalLand ? this.terrain.cellAt(parent.x, parent.z) : this.nearestCell(
+      this.landCells[region], center.x, center.z,
+    );
+    const position = fromLocalLand ? parent : this.terrain.cells[index];
+    const origin = { ...parent, x: position.x, z: position.z };
+    const newborns: Creature[] = [];
+    for (let i = 0; i < number; i++) newborns.push(this.spawn(parent.role, index, origin, { niche }));
+    this.creatures.push(...newborns);
+    this.births += number;
+    const branches = [...this.species.values()].filter(species => species.id > previousSpecies);
+    const selectedTraits = niche ? `，首只适温 ${newborns[0].genes.comfort.toFixed(1)}°C、适湿 ${Math.round(newborns[0].genes.moisture)}%` : '';
+    return `${fromArchive ? '遗传档案复育。' : ''}从 #${parent.id} 繁育了 ${number} 只第 ${parent.generation + 1} 代幼体${selectedTraits}。`
+      + (branches.length ? `分化图新增 ${branches.map(speciesName).join('、')}。` : '');
+  }
+
+  breed(id: number, niche: Niche | null, count: number) {
+    const parent = this.creatures.find(c => c.id === id);
+    if (!parent) return '选择一只在世个体后再繁育。';
+    if (parent.age < MATURE_AGE) return '幼体成年后才能繁育，可先使用促生。';
+    return this.nurture(parent, this.terrain.tileAt(parent.x, parent.z), niche, count);
+  }
+
+  breedLineage(root: number, region: number, niche: Niche | null, count: number) {
+    const line = this.lineages.get(root);
+    if (!line || (niche !== null && !isNiche(niche))) return '请选择要延续的血脉和培育方向。';
+    const candidates = this.creatures.filter(c => this.records.get(c.id)?.lineages.includes(root));
+    const wanted = niche === null ? undefined : nicheTargets(niche);
+    const score = (c: Creature) => c.generation * 0.1 + c.energy * 0.02
+      - (wanted ? Math.abs(c.genes.comfort - wanted.comfort) + Math.abs(c.genes.moisture - wanted.moisture) * 0.33 : 0);
+    const mature = candidates.filter(c => c.age >= MATURE_AGE);
+    const parent = mature.sort((a, b) => score(b) - score(a))[0];
+    if (parent) return this.nurture(parent, region, niche, count);
+    if (candidates.length) return '这条血脉的在世成员仍是幼体。请等它们成年，或对一只幼体使用促生。';
+    if (!line.archive) return '这条旧血脉没有可用的遗传档案。';
+    if (!integer(region, 0, this.tiles.length - 1)) return '请选择有效地块。';
+    const position = this.terrain.tileCenter(region);
+    const cell = this.terrain.cells[this.nearestCell(this.landCells[region], position.x, position.z)];
+    return this.nurture({ id: root, role: line.role, ...line.archive, x: cell.x, z: cell.z }, region, niche, count, true);
+  }
+
+  introduce(role: Role, region: number, count: number) {
+    if (!isRole(role) || !integer(region, 0, this.tiles.length - 1) || !integer(count, 1, 6)) return '请选择有效地块、种群和数量。';
+    const number = this.spaceFor(region, count);
+    if (number === 0) return '此地块或世界种群已满。';
+    const sites = this.sites(region)[role];
+    for (let i = 0; i < number; i++) this.creatures.push(this.spawn(role, this.pick(sites)));
+    return `在第 ${region + 1} 区投放了 ${number} 只${creatureName(role, 'ancestral')}。`;
+  }
+
+  relocate(id: number, region: number) {
+    const creature = this.creatures.find(c => c.id === id);
+    if (!creature || !integer(region, 0, this.tiles.length - 1)) return '请选择在世个体和有效目的地。';
+    if (this.terrain.tileAt(creature.x, creature.z) === region) return '这个体已经在所选地块。';
+    const before = this.conditions(creature);
+    const position = this.terrain.cells[this.pick(this.sites(region)[creature.role])];
+    creature.x = position.x;
+    creature.z = position.z;
+    const after = this.conditions(creature);
+    return `#${id} 已迁到第 ${region + 1} 区，环境耗能 ${before.stress.toFixed(2)} → ${after.stress.toFixed(2)}。`;
   }
 
   frame(playing: boolean, speed: Speed): Frame {
-    const root = this.bloodline?.root;
-    const branch = root === undefined ? [] : [...this.records.values()].filter(record => record.tracked);
-    const living = this.bloodline ? branch.filter(record => record.id !== root && record.died === null).length : 0;
-    const recent = branch.slice(-10);
-    if (branch.length > 10) recent.unshift(branch[0]);
+    const root = this.activeLineage;
+    const branch = root === null ? [] : [...this.records.values()].filter(record => record.lineages.includes(root));
+    const recent = [
+      ...branch.filter(record => record.id === root || record.died === null),
+      ...branch.filter(record => record.id !== root && record.died !== null).slice(-24),
+    ];
+    const living = new Map<number, number>();
+    const speciesCounts = new Map<number, number>();
+    const population = this.regionPopulations();
     const creatures = this.creatures.map(creature => {
+      for (const lineage of this.records.get(creature.id)?.lineages ?? []) {
+        if (lineage !== creature.id) living.set(lineage, (living.get(lineage) ?? 0) + 1);
+      }
+      speciesCounts.set(creature.species, (speciesCounts.get(creature.species) ?? 0) + 1);
       const { localMoisture, stress } = this.conditions(creature);
-      return { ...creature, localMoisture, stress };
+      return { ...creature, localMoisture, stress, region: this.terrain.tileAt(creature.x, creature.z) };
     });
+    const lineages = [...this.lineages.values()].map(line => ({ ...line, living: living.get(line.root) ?? 0 }));
     return {
-      seed: this.seed, tick: this.tick, climate: this.climate, rainTrend: this.rainTrend, creatures,
+      seed: this.seed, tiles: this.tiles, tick: this.tick, climate: this.climate, rainTrend: this.rainTrend, creatures,
+      regions: this.tiles.map((tile, index) => ({ ...tile, ...this.regions[index], population: population[index] })),
       births: this.births, deaths: this.deaths, census: this.census,
-      bloodline: this.bloodline ? { ...this.bloodline, living } : null, branch: recent, playing, speed,
+      bloodline: lineages.find(line => line.root === root) ?? null, lineages,
+      species: [...this.species.values()].map(species => ({ ...species, population: speciesCounts.get(species.id) ?? 0 })),
+      branch: recent, playing, speed,
     };
   }
 
   save(): Save {
     return {
-      version: 2, seed: this.seed, rng: this.rng, tick: this.tick, nextId: this.nextId,
-      climate: { ...this.climate }, rainTrend: this.rainTrend,
+      version: 3, seed: this.seed, rng: this.rng, tick: this.tick, nextId: this.nextId,
+      tiles: this.tiles.map(tile => ({ ...tile })),
+      regions: this.regions.map(region => ({ climate: { ...region.climate }, rainTrend: region.rainTrend })),
       creatures: this.creatures.map(c => ({ ...c, genes: { ...c.genes } })),
-      resources: Array.from(this.resources), records: [...this.records.values()].map(record => ({ ...record })),
+      resources: Array.from(this.resources), records: [...this.records.values()].map(record => ({ ...record, lineages: [...record.lineages] })),
       births: this.births, deaths: this.deaths, census: this.census.map(sample => ({ ...sample })),
-      bloodline: this.bloodline ? { ...this.bloodline } : null,
+      activeLineage: this.activeLineage, lineages: structuredClone([...this.lineages.values()]),
+      species: [...this.species.values()].map(species => ({ ...species })),
     };
   }
 
-  private migrateLegacy(save: LegacySave): Save {
-    if (!Array.isArray(save.resources) || save.resources.length !== LEGACY_GRID_SIZE ** 2
-      || save.resources.some(n => !bounds(n, 0, 71))
-      || !Array.isArray(save.creatures) || !save.creatures.every(c => c?.genes && isLegacyRole(c.role))
-      || !Array.isArray(save.records) || !save.records.every(r => r && isLegacyRole(r.role))
-      || !Array.isArray(save.census) || !save.census.every(s => s && typeof s === 'object')
-      || (save.bloodline !== null && !isLegacyRole(save.bloodline?.role))) throw new Error('旧版存档内容有误。');
+  static compose(sources: ParcelSource[]) {
+    if (!Array.isArray(sources) || sources.length !== ATLAS_SIZE) throw new Error('请选择九个地块再拼合。');
+    const parcels = sources.map((source, index) => {
+      try {
+        if (isTile(source)) return new World(source.seed, true, [source]);
+        if (!source || typeof source !== 'object' || !('save' in source)) throw new Error('无效来源');
+        const parcel = World.restore(source.save);
+        if (parcel.tiles.length !== 1) throw new Error('需要单区存档');
+        return parcel;
+      } catch (error) {
+        throw new Error(`第 ${index + 1} 区无法拼合。${(error as Error).message}`);
+      }
+    });
+    const tiles = parcels.map(parcel => parcel.tiles[0]);
+    const world = new World(tiles[0].seed, false, tiles);
+    world.tick = Math.max(...parcels.map(parcel => parcel.tick));
+    for (const [region, parcel] of parcels.entries()) {
+      const idOffset = world.nextId - 1;
+      if (!Number.isSafeInteger(idOffset + parcel.nextId)) throw new Error('源存档的个体编号过大。');
+      const timeOffset = world.tick - parcel.tick;
+      const { x, z } = world.terrain.tileCenter(region);
+      world.nextId = idOffset + parcel.nextId;
+      world.births += parcel.births;
+      world.deaths += parcel.deaths;
+      world.regions[region] = parcel.regions[0];
+      world.rng = (Math.imul(world.rng ^ parcel.rng, 0x45d9f3b) + region + 1) >>> 0;
 
-    const resources = Array.from(this.resources);
-    const offset = (GRID_SIZE - LEGACY_GRID_SIZE) / 2;
-    for (let row = 0; row < LEGACY_GRID_SIZE; row++) {
-      for (let col = 0; col < LEGACY_GRID_SIZE; col++) {
-        const index = (row + offset) * GRID_SIZE + col + offset;
-        resources[index] = Math.min(this.terrain.cells[index].capacity, save.resources[row * LEGACY_GRID_SIZE + col]);
+      const branchIds = new Map<number, number>();
+      for (const species of parcel.species.values()) {
+        if (species.parent === null) {
+          branchIds.set(species.id, rootSpecies(species.role));
+          continue;
+        }
+        const parent = branchIds.get(species.parent)!;
+        const existing = [...world.species.values()].find(s => s.parent === parent && s.niche === species.niche);
+        if (existing) {
+          existing.born = Math.min(existing.born, species.born + timeOffset);
+          branchIds.set(species.id, existing.id);
+        } else {
+          const id = world.species.size + 1;
+          world.species.set(id, { ...species, id, parent, born: species.born + timeOffset });
+          branchIds.set(species.id, id);
+        }
+      }
+
+      for (const creature of parcel.creatures) {
+        world.creatures.push({
+          ...creature, id: idOffset + creature.id, x: creature.x + x, z: creature.z + z,
+          parent: creature.parent === null ? null : idOffset + creature.parent,
+          species: branchIds.get(creature.species)!,
+        });
+      }
+      for (const record of parcel.records.values()) {
+        const id = idOffset + record.id;
+        world.records.set(id, {
+          ...record, id, parent: record.parent === null ? null : idOffset + record.parent,
+          species: branchIds.get(record.species)!, born: record.born + timeOffset,
+          died: record.died === null ? null : record.died + timeOffset,
+          lineages: record.lineages.map(root => root + idOffset),
+        });
+      }
+      for (const line of parcel.lineages.values()) {
+        const root = idOffset + line.root;
+        const archive = line.archive && { ...line.archive, species: branchIds.get(line.archive.species)! };
+        world.lineages.set(root, { ...line, root, ...(archive ? { archive } : {}) });
+      }
+      if (world.activeLineage === null && parcel.activeLineage !== null) world.activeLineage = idOffset + parcel.activeLineage;
+
+      const startCol = region % 3 * GRID_SIZE;
+      const startRow = Math.floor(region / 3) * GRID_SIZE;
+      for (let row = 0; row < GRID_SIZE; row++) {
+        for (let col = 0; col < GRID_SIZE; col++) {
+          const index = (startRow + row) * world.terrain.gridSize + startCol + col;
+          world.resources[index] = Math.min(world.terrain.cells[index].capacity, parcel.resources[row * GRID_SIZE + col]);
+        }
       }
     }
+    world.sample();
+    return world;
+  }
+
+  private migrateLegacy(save: PreviousSave): Save {
+    const originalSize = save.version === 1 ? LEGACY_GRID_SIZE : GRID_SIZE;
+    const roleValid = save.version === 1 ? isLegacyRole : isRole;
+    if (!Array.isArray(save.resources) || save.resources.length !== originalSize ** 2
+      || save.resources.some(n => !bounds(n, 0, 71))
+      || !Array.isArray(save.creatures) || !save.creatures.every(c => c?.genes && roleValid(c.role))
+      || !Array.isArray(save.records) || !save.records.every(r => r && roleValid(r.role) && typeof r.tracked === 'boolean')
+      || !Array.isArray(save.census) || !save.census.every(s => s && typeof s === 'object')
+      || (save.bloodline !== null && !roleValid(save.bloodline?.role))) throw new Error('旧版存档内容有误。');
+
+    const resources = Array.from(this.resources);
+    const offset = (GRID_SIZE - originalSize) / 2;
+    for (let row = 0; row < originalSize; row++) {
+      for (let col = 0; col < originalSize; col++) {
+        const index = (row + offset) * GRID_SIZE + col + offset;
+        resources[index] = Math.min(this.terrain.cells[index].capacity, save.resources[row * originalSize + col]);
+      }
+    }
+    const root = save.bloodline?.root ?? null;
+    const creatures: Creature[] = save.creatures.map(c => ({
+      ...c, form: c.form ?? 'ancestral', species: rootSpecies(c.role),
+      genes: { ...c.genes, moisture: c.genes.moisture ?? TRAIT_CENTERS[c.role].moisture },
+    }));
+    const founder = creatures.find(c => c.id === root);
+    const archive = founder && { genes: { ...founder.genes }, species: founder.species, generation: founder.generation };
     return {
-      ...save, version: 2, rainTrend: save.climate?.rain, resources,
-      creatures: save.creatures.map(c => ({
-        ...c, form: 'ancestral', genes: { ...c.genes, moisture: TRAIT_CENTERS[c.role].moisture },
+      version: 3, seed: save.seed, rng: save.rng, tick: save.tick, nextId: save.nextId, births: save.births, deaths: save.deaths,
+      tiles: this.tiles, regions: [{ climate: save.climate, rainTrend: save.rainTrend ?? save.climate?.rain }],
+      resources, creatures,
+      records: save.records.map(({ tracked, ...record }) => ({
+        ...record, form: record.form ?? 'ancestral', species: rootSpecies(record.role), lineages: tracked && root !== null ? [root] : [],
       })),
-      records: save.records.map(r => ({ ...r, form: 'ancestral' })),
-      census: save.census.map(s => ({ ...s, browser: 0, wader: 0, stalker: 0 })),
+      census: save.census.map(s => ({ browser: 0, wader: 0, stalker: 0, ...s })),
+      activeLineage: root, lineages: save.bloodline ? [{ ...save.bloodline, ...(archive ? { archive } : {}) }] : [],
+      species: [...this.species.values()],
     };
   }
 
   static restore(value: unknown) {
     if (!value || typeof value !== 'object') throw new Error('没有可用的存档。');
-    const candidate = value as Save | LegacySave;
-    if (candidate.version !== 1 && candidate.version !== 2) throw new Error('当前版本无法读取此存档。');
+    const candidate = value as Save | PreviousSave;
+    if (candidate.version !== 1 && candidate.version !== 2 && candidate.version !== 3) throw new Error('当前版本无法读取此存档。');
     if (!validSeed(candidate.seed)) throw new Error('存档世界种子有误。');
-    const world = new World(candidate.seed, false);
-    const save = candidate.version === 1 ? world.migrateLegacy(candidate) : candidate;
+    if (candidate.version === 3 && !Array.isArray(candidate.tiles)) throw new Error('存档地块有误。');
+    const world = new World(candidate.seed, false, candidate.version === 3 ? candidate.tiles : undefined);
+    const save = candidate.version === 3 ? candidate : world.migrateLegacy(candidate);
     if (!integer(save.tick, 0, Number.MAX_SAFE_INTEGER)
       || !integer(save.rng, 0, 0xffffffff) || !integer(save.nextId, 1, Number.MAX_SAFE_INTEGER)
       || !integer(save.births, 0, save.nextId) || !integer(save.deaths, 0, save.nextId)
-      || !bounds(save.climate?.temperature, 5, 38) || !bounds(save.climate?.rain, 10, 100)
-      || !bounds(save.rainTrend, 10, 100)
-      || !Array.isArray(save.resources) || save.resources.length !== GRID_SIZE ** 2
+      || !Array.isArray(save.regions) || save.regions.length !== world.tiles.length
+      || !save.regions.every(region => bounds(region?.climate?.temperature, 5, 38) && bounds(region?.climate?.rain, 10, 100)
+        && bounds(region?.rainTrend, 10, 100))
+      || !Array.isArray(save.resources) || save.resources.length !== world.terrain.gridSize ** 2
       || save.resources.some(n => !bounds(n, 0, 71))
-      || !Array.isArray(save.creatures) || save.creatures.length > MAX_POPULATION
-      || !Array.isArray(save.records) || save.records.length > MAX_RECORDS
+      || !Array.isArray(save.creatures) || save.creatures.length > world.capacity
+      || !Array.isArray(save.records) || !Array.isArray(save.lineages)
+      || !Array.isArray(save.species) || save.species.length < ROLE_KEYS.length
       || !Array.isArray(save.census) || save.census.length > HISTORY_LENGTH) throw new Error('存档内容有误。');
+    world.species.clear();
+    for (const s of save.species) {
+      if (!s || s.id !== world.species.size + 1 || !isRole(s.role) || !integer(s.born, 0, save.tick)
+        || (s.id <= ROLE_KEYS.length ? (s.id !== rootSpecies(s.role) || s.parent !== null || s.niche !== null)
+          : (s.parent === null || world.species.get(s.parent)?.role !== s.role || !isNiche(s.niche)))) {
+        throw new Error('存档物种分化图有误。');
+      }
+      world.species.set(s.id, { ...s });
+    }
     let priorId = 0;
     for (const r of save.records) {
       if (!r || !integer(r.id, priorId + 1, save.nextId - 1) || !isRole(r.role) || !isForm(r.form)
+        || world.species.get(r.species)?.role !== r.role
         || !integer(r.generation, 1, r.id) || !integer(r.born, 0, save.tick)
         || (r.parent !== null && !integer(r.parent, 1, r.id - 1))
         || (r.died !== null && !integer(r.died, r.born, save.tick))
-        || typeof r.tracked !== 'boolean') throw new Error('存档谱系有误。');
-      world.records.set(r.id, { ...r });
+        || !Array.isArray(r.lineages) || new Set(r.lineages).size !== r.lineages.length) throw new Error('存档谱系有误。');
+      world.records.set(r.id, { ...r, lineages: [...r.lineages] });
       priorId = r.id;
     }
     const ids = new Set<number>();
     for (const c of save.creatures) {
-      if (!c || !c.genes || !isRole(c.role) || !isForm(c.form) || !integer(c.id, 1, save.nextId - 1) || ids.has(c.id)
-        || !integer(c.generation, 1, c.id) || world.records.get(c.id)?.died !== null
-        || world.records.get(c.id)?.form !== c.form
+      const record = world.records.get(c?.id);
+      if (!c || !validGenes(c.genes) || !isRole(c.role) || !isForm(c.form) || !integer(c.id, 1, save.nextId - 1) || ids.has(c.id)
+        || !integer(c.generation, 1, c.id) || record?.died !== null
+        || record?.form !== c.form || record?.species !== c.species || record.role !== c.role
         || (c.parent !== null && !integer(c.parent, 1, c.id - 1))
-        || !bounds(c.x, -MAP_HALF, MAP_HALF) || !bounds(c.z, -MAP_HALF, MAP_HALF)
+        || !bounds(c.x, -world.terrain.mapHalf, world.terrain.mapHalf) || !bounds(c.z, -world.terrain.mapHalf, world.terrain.mapHalf)
         || !world.canOccupy(c, c.x, c.z) || !bounds(c.angle, -TAU, TAU)
         || !bounds(c.energy, Number.MIN_VALUE, 100) || !integer(c.age, 0, save.tick + 160)
-        || !integer(c.cooldown, 0, 180) || GENES.some(key => !bounds(c.genes[key], LIMITS[key][0], LIMITS[key][1]))) {
+        || !integer(c.cooldown, 0, 180)) {
         throw new Error('存档个体有误。');
       }
       ids.add(c.id);
     }
     if (save.census.some(s => !s || !integer(s.tick, 0, save.tick)
-      || !ROLE_KEYS.every(role => integer(s[role], 0, MAX_POPULATION))
-      || ROLE_KEYS.reduce((sum, role) => sum + s[role], 0) > MAX_POPULATION)) {
+      || !ROLE_KEYS.every(role => integer(s[role], 0, world.capacity))
+      || ROLE_KEYS.reduce((sum, role) => sum + s[role], 0) > world.capacity)) {
       throw new Error('存档统计有误。');
     }
-    if (save.bloodline !== null) {
-      const b = save.bloodline;
-      if (!b || !world.records.get(b.root)?.tracked || !isRole(b.role)
-        || !integer(b.total, 0, save.births) || !integer(b.living, 0, MAX_POPULATION)
-        || !integer(b.generation, 1, save.nextId)) throw new Error('存档血脉有误。');
+    for (const line of save.lineages) {
+      const founder = world.records.get(line?.root);
+      if (!line || !founder?.lineages.includes(line.root) || founder.role !== line.role || world.lineages.has(line.root)
+        || !integer(line.total, 0, save.births) || !integer(line.living, 0, world.capacity)
+        || !integer(line.generation, founder.generation, save.nextId)
+        || (line.archive !== undefined && (!line.archive || !validGenes(line.archive.genes)
+          || line.archive.species !== founder.species || line.archive.generation !== founder.generation))) {
+        throw new Error('存档血脉有误。');
+      }
+      world.lineages.set(line.root, structuredClone(line));
+    }
+    for (const record of world.records.values()) {
+      if (record.lineages.some(root => !world.lineages.has(root))) throw new Error('存档血脉归属有误。');
+    }
+    if (save.activeLineage !== null && !world.lineages.has(save.activeLineage)) {
+      throw new Error('存档血脉选择有误。');
     }
     world.tick = save.tick;
     world.rng = save.rng;
     world.nextId = save.nextId;
-    world.climate = { ...save.climate };
-    world.rainTrend = save.rainTrend;
+    world.regions = save.regions.map(region => ({ climate: { ...region.climate }, rainTrend: region.rainTrend }));
     world.creatures = save.creatures.map(c => ({ ...c, genes: { ...c.genes } }));
     world.resources = Float64Array.from(save.resources);
     world.births = save.births;
     world.deaths = save.deaths;
     world.census = save.census.map(s => ({ ...s }));
-    world.bloodline = save.bloodline ? { ...save.bloodline } : null;
+    world.activeLineage = save.activeLineage;
     return world;
   }
 }

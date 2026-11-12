@@ -18,14 +18,7 @@
         <span class="version">Alpha 0.1</span>
         <div class="top-actions">
           <a class="repository" href="https://github.com/chunrizizhijie-png/lifeverse" target="_blank" rel="noopener">GitHub <span aria-hidden="true">↗</span></a>
-          <details class="save-menu" id="save-menu">
-            <summary class="button">存档 <span class="chevron" aria-hidden="true"></span></summary>
-            <div class="save-options">
-              <button id="save-world" type="button">保存当前世界</button>
-              <button id="load-world" type="button">读取本地存档</button>
-              <span id="save-description">此浏览器暂无存档</span>
-            </div>
-          </details>
+          <button class="button" id="atlas-open" type="button">九区图册</button>
           <button class="button gold-button" id="new-world" type="button"><span aria-hidden="true">＋</span> 新世界</button>
         </div>
       </div>
@@ -76,6 +69,7 @@
           <div class="tabs" role="tablist" aria-label="观察与干预面板">
             <button id="individual-tab" type="button" role="tab" aria-controls="individual-panel" aria-selected="true">个体观察</button>
             <button id="lineage-tab" type="button" role="tab" aria-controls="lineage-panel" aria-selected="false" tabindex="-1">血脉</button>
+            <button id="evolution-tab" type="button" role="tab" aria-controls="evolution-panel" aria-selected="false" tabindex="-1">分化与干预</button>
             <button id="climate-tab" type="button" role="tab" aria-controls="climate-panel" aria-selected="false" tabindex="-1">环境</button>
           </div>
 
@@ -120,9 +114,13 @@
           </section>
 
           <section class="tab-panel" id="lineage-panel" role="tabpanel" aria-labelledby="lineage-tab" hidden>
-            <div class="section-intro"><h2>神选血脉</h2><p id="lineage-summary">选择一个在世个体，追踪它的后代。</p></div>
+            <div class="section-intro"><h2>血脉档案</h2><p id="lineage-summary">选择一个在世个体，追踪它的后代。</p></div>
             <button class="button" id="track-from-lineage" type="button" disabled>追踪当前个体</button>
             <div id="lineage-data" hidden>
+              <div class="lineage-actions">
+                <label><span class="sr-only">选择已追踪血脉</span><select id="lineage-picker"></select></label>
+                <button class="button gold-button" id="breed-lineage" type="button">延续这条血脉</button>
+              </div>
               <dl class="traits lineage-totals">
                 <div><dt>累计后代</dt><dd id="descendants">0</dd></div>
                 <div><dt>在世后代</dt><dd id="descendants-alive">0</dd></div>
@@ -133,8 +131,12 @@
             </div>
           </section>
 
+          <section class="tab-panel" id="evolution-panel" role="tabpanel" aria-labelledby="evolution-tab" hidden>
+            <div id="evolution-content"></div>
+          </section>
+
           <section class="tab-panel" id="climate-panel" role="tabpanel" aria-labelledby="climate-tab" hidden>
-            <div class="section-intro"><h2>世界环境</h2><p>长时间维持一种气候，可在血脉里观察适湿的变化。用 48× 倍速推进多代。</p></div>
+            <div class="section-intro"><h2 id="climate-region">苔湾群岛</h2><p>这里的气候影响本区植物和生物。打开九区图册可切换地块。</p></div>
             <div class="climate-controls">
               <label class="slider-label" for="set-temperature"><strong>地表气温</strong><output id="set-temperature-value">22°C</output></label>
               <input id="set-temperature" type="range" min="5" max="38" value="22">
@@ -168,7 +170,7 @@
           </details>
         </div>
         <div class="population-plot">
-          <div class="plot-legend" id="population-legend" role="group" aria-label="在世种群"></div>
+            <div class="plot-legend" id="population-legend" role="group" aria-label="生态角色种群总计"></div>
           <canvas id="population-chart" role="img" aria-label="各类生物的种群变化"></canvas>
         </div>
       </section>

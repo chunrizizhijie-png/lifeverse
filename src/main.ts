@@ -1,9 +1,12 @@
 import './style.css';
 import { createMap, createPortrait } from './render/view.ts';
-import { creatureName, DEFAULT_SEED, FORM_NAMES, INITIAL_CLIMATE, MINUTES_PER_TICK, populationCounts, ROLE_KEYS, ROLES } from './sim/types.ts';
-import type { Command, Creature, Frame, Gift, Save, Speed, WorkerReply } from './sim/types.ts';
+import { nicheFor, nicheName, speciesName } from './sim/evolution.ts';
+import { BIOMES, creatureName, DEFAULT_SEED, FORM_NAMES, INITIAL_CLIMATE, MINUTES_PER_TICK, populationCounts, ROLE_KEYS, ROLES } from './sim/types.ts';
+import type { Command, Creature, Frame, Gift, ObservedCreature, Species, Speed, WorkerReply } from './sim/types.ts';
 import { MATURE_AGE, validSeed } from './sim/world.ts';
+import { createAtlas } from './ui/atlas.ts';
 import { makeChart } from './ui/chart.ts';
+import { createEvolution } from './ui/evolution.ts';
 
 const element = <T extends HTMLElement = HTMLElement>(id: string) => {
   const match = document.getElementById(id);
@@ -18,7 +21,6 @@ const labelId = (id: number) => `#${String(id).padStart(3, '0')}`;
 const generationLabel = (generation: number) => generation === 1 ? '第 1 代（初代）' : `第 ${generation} 代`;
 const percent = (value: number) => `${Math.round(value)}%`;
 const showSeed = (seed: number) => String(seed).padStart(6, '0');
-const worldName = (seed: number) => seed === DEFAULT_SEED ? '苔湾群岛' : `群岛 ${showSeed(seed)}`;
 const fmt = new Intl.NumberFormat('zh-CN');
 const timeLabel = (tick: number) => {
   const minutes = tick * MINUTES_PER_TICK;
@@ -37,9 +39,7 @@ const trackFromLineage = element<HTMLButtonElement>('track-from-lineage');
 const speedButtons = [...document.querySelectorAll<HTMLButtonElement>('[data-speed]')];
 const temperature = element<HTMLInputElement>('set-temperature');
 const rain = element<HTMLInputElement>('set-rain');
-const saveMenu = element<HTMLDetailsElement>('save-menu');
-const saveButton = element<HTMLButtonElement>('save-world');
-const loadButton = element<HTMLButtonElement>('load-world');
+const lineagePicker = element<HTMLSelectElement>('lineage-picker');
 const toast = element('toast');
 const giftResult = element('gift-result');
 const localClimate = element('local-climate');
@@ -48,7 +48,8 @@ const drawPortrait = createPortrait(element('portrait'));
 const drawChart = makeChart(element<HTMLCanvasElement>('population-chart'));
 const worker = new Worker(new URL('./sim/worker.ts', import.meta.url), { type: 'module' });
 const send = (command: Command) => worker.postMessage(command);
-const saveKey = 'lifeverse.save.v1';
+const atlas = createAtlas(send, notice, focusRegion);
+const evolution = createEvolution(element('evolution-content'), send, id => choose(id));
 
 const populationLegend = element('population-legend');
 const foodWeb = element('food-web-list');
@@ -69,14 +70,22 @@ for (const role of ROLE_KEYS) {
 }
 
 let frame: Frame | undefined;
+let currentEpoch = -1;
+let activeRegion = 0;
+let species = new Map<number, Species>();
 let selected: number | null = null;
 let manuallySelected = false;
 let pickerKey = '';
 let portraitKey = '';
 let lineageKey = '';
+let lineagePickerKey = '';
 let noticeTimer = 0;
 let lastGift: { id: number; message: string } | null = null;
 const current = () => frame?.creatures.find(c => c.id === selected);
+const individualName = (creature: Creature) => {
+  const branch = species.get(creature.species);
+  return branch?.niche ? speciesName(branch) : creatureName(creature.role, creature.form);
+};
 
 function notice(message: string) {
   toast.textContent = message;
@@ -93,6 +102,7 @@ function showTab(tab: string) {
     button.tabIndex = active ? 0 : -1;
     element(button.getAttribute('aria-controls')!).hidden = !active;
   }
+  if (tab === 'evolution' && frame) evolution.receive(frame, selected, activeRegion);
 }
 
 function choose(id: number, openPanel = false) {
@@ -100,19 +110,21 @@ function choose(id: number, openPanel = false) {
   manuallySelected = true;
   if (openPanel) showTab('individual');
   refreshIndividual();
+  if (frame) evolution.receive(frame, selected, activeRegion);
 }
 
-function refreshPicker(creatures: Creature[]) {
-  const missing = selected !== null && !creatures.some(c => c.id === selected);
-  const key = `${creatures.map(c => `${c.id}:${c.role}:${c.form}:${c.age < MATURE_AGE}`).join(',')}|${missing ? selected : ''}`;
+function refreshPicker(creatures: ObservedCreature[]) {
+  const local = creatures.filter(c => c.region === activeRegion || c.id === selected);
+  const missing = selected !== null && !local.some(c => c.id === selected);
+  const key = `${local.map(c => `${c.id}:${c.species}:${c.form}:${c.age < MATURE_AGE}`).join(',')}|${missing ? selected : ''}`;
   if (key !== pickerKey) {
-    const options = creatures.map(c => new Option(
-      `${labelId(c.id)} · ${creatureName(c.role, c.form)}${c.age < MATURE_AGE ? ' · 幼体' : ''}`, String(c.id)));
+    const options = local.map(c => new Option(
+      `${labelId(c.id)} · ${individualName(c)}${c.age < MATURE_AGE ? ' · 幼体' : ''}`, String(c.id)));
     if (missing) options.unshift(new Option(`${labelId(selected!)} · 已死亡`, String(selected)));
     picker.replaceChildren(...(options.length ? options : [new Option('—', '')]));
     pickerKey = key;
   }
-  picker.disabled = !creatures.length;
+  picker.disabled = !local.length;
   if (selected !== null) picker.value = String(selected);
   update('picker-value', selected === null ? '—' : labelId(selected));
 }
@@ -132,9 +144,10 @@ function refreshIndividual() {
   const creature = current();
   const dead = !creature && selected !== null;
   const root = creature && frame?.bloodline?.root === creature.id;
-  update('creature-name', creature ? creatureName(creature.role, creature.form) : dead ? `个体 ${labelId(selected!)}` : '等待观测');
+  update('creature-name', creature ? individualName(creature) : dead ? `个体 ${labelId(selected!)}` : '等待观测');
   update('creature-meta', creature
     ? `${generationLabel(creature.generation)} · ${creature.age < MATURE_AGE ? '幼体' : '成年'} · ${ROLES[creature.role].diet}`
+      + (frame!.tiles.length > 1 ? ` · 第 ${creature.region + 1} 区` : '')
     : dead ? '已离开世界' : '选择地图上的个体');
   element('portrait-empty').hidden = !!creature;
   update('portrait-empty', dead ? '该个体已离开世界' : '暂无在世个体');
@@ -154,7 +167,7 @@ function refreshIndividual() {
   update('trait-comfort', creature ? `${creature.genes.comfort.toFixed(1)}°C` : '—');
   update('trait-moisture', creature ? percent(creature.genes.moisture) : '—');
   localClimate.hidden = !creature;
-  if (creature) update('local-climate', `当地湿度 ${percent(creature.localMoisture)} · 气候耗能 ${creature.stress.toFixed(2)} / 步`);
+  if (creature) update('local-climate', `遗传倾向 ${nicheName(nicheFor(creature.genes))} · 当地湿度 ${percent(creature.localMoisture)} · 气候耗能 ${creature.stress.toFixed(2)} / 步`);
   for (const button of gifts) {
     button.disabled = !creature
       || (button.dataset.gift === 'grow' && creature.age >= MATURE_AGE)
@@ -171,14 +184,24 @@ function refreshIndividual() {
 function refreshLineage(next: Frame) {
   const bloodline = next.bloodline;
   element('lineage-data').hidden = !bloodline;
+  const pickerKey = next.lineages.map(line => `${line.root}:${line.living}`).join(',');
+  if (pickerKey !== lineagePickerKey) {
+    lineagePicker.replaceChildren(...next.lineages.map(line => new Option(
+      `${ROLES[line.role].name} ${labelId(line.root)} · ${line.living} 在世后代`, String(line.root),
+    )));
+    lineagePickerKey = pickerKey;
+  }
+  if (bloodline) lineagePicker.value = String(bloodline.root);
+  const founder = bloodline && next.branch.find(record => record.id === bloodline.root);
   update('lineage-summary', bloodline
-    ? `${ROLES[bloodline.role].name} ${labelId(bloodline.root)} 的血脉记录`
+    ? `${ROLES[bloodline.role].name} ${labelId(bloodline.root)} · 创始个体${founder?.died === null ? '在世' : '已死亡'}`
+      + (bloodline.living ? `，仍有 ${bloodline.living} 只在世后代` : bloodline.archive ? '，已保留遗传档案' : '')
     : '选择一个在世个体，追踪它的后代。');
   if (!bloodline) { lineageKey = ''; return; }
   update('descendants', fmt.format(bloodline.total));
   update('descendants-alive', fmt.format(bloodline.living));
   update('descendants-generation', `第 ${bloodline.generation} 代`);
-  const key = `${bloodline.root}|${next.branch.map(record => `${record.id}:${record.died}:${record.form}`).join(',')}`;
+  const key = `${bloodline.root}|${next.branch.map(record => `${record.id}:${record.died}:${record.species}`).join(',')}`;
   if (key === lineageKey) return;
   lineageKey = key;
   const rows = next.branch.map(record => {
@@ -190,15 +213,48 @@ function refreshLineage(next: Frame) {
     select.disabled = record.died !== null;
     select.addEventListener('click', () => choose(record.id, true));
     const info = document.createElement('span');
-    info.textContent = `${FORM_NAMES[record.form]} · 第 ${record.generation} 代 · ${record.died === null ? '在世' : '已死亡'}`;
+    const branch = species.get(record.species);
+    info.textContent = `${branch?.niche ? speciesName(branch) : FORM_NAMES[record.form]} · 第 ${record.generation} 代 · ${record.died === null ? '在世' : '已死亡'}`;
     row.append(select, info);
     return row;
   });
   element('lineage-list').replaceChildren(...rows);
 }
 
-function refresh(next: Frame) {
-  if (frame?.seed !== next.seed || (frame && frame.tick > next.tick)) {
+function focusRegion(index: number) {
+  if (!frame) return;
+  if (index === -1) {
+    map.focusRegion(-1);
+    return;
+  }
+  if (!frame.regions[index]) return;
+  activeRegion = index;
+  map.focusRegion(index);
+  refreshClimate(frame);
+  refreshIndividual();
+  evolution.receive(frame, selected, activeRegion);
+}
+
+function refreshClimate(next: Frame) {
+  const region = next.regions[activeRegion] ?? next.regions[0];
+  update('temperature', `${region.climate.temperature}°C`);
+  update('world-seed', next.tiles.length > 1 ? `第 ${activeRegion + 1} 区 · ${BIOMES[region.biome].name}` : `种子 ${showSeed(next.seed)}`);
+  update('climate-region', next.tiles.length > 1 ? `第 ${activeRegion + 1} 区 · ${BIOMES[region.biome].name}` : BIOMES[region.biome].name);
+  if (document.activeElement !== temperature) {
+    temperature.value = String(region.climate.temperature);
+    update('set-temperature-value', `${temperature.value}°C`);
+  }
+  if (document.activeElement !== rain) {
+    rain.value = String(region.climate.rain);
+    update('set-rain-value', `${rain.value}%`);
+  }
+  update('rain-trend', percent(region.rainTrend));
+}
+
+function refresh(next: Frame, epoch: number) {
+  if (currentEpoch !== epoch) {
+    currentEpoch = epoch;
+    activeRegion = 0;
     selected = next.creatures[0]?.id ?? null;
     manuallySelected = false;
     portraitKey = '';
@@ -206,13 +262,14 @@ function refresh(next: Frame) {
   }
   if (!manuallySelected && !next.creatures.some(c => c.id === selected)) selected = next.creatures[0]?.id ?? null;
   frame = next;
+  species = new Map(next.species.map(branch => [branch.id, branch]));
   map.setFrame(next);
+  atlas.receive(next);
+  evolution.receive(next, selected, activeRegion);
   refreshIndividual();
   refreshLineage(next);
-  update('world-name', worldName(next.seed));
-  update('world-seed', `种子 ${showSeed(next.seed)}`);
+  update('world-name', next.tiles.length > 1 ? '九区生态世界' : BIOMES[next.tiles[0].biome].name);
   update('world-time', timeLabel(next.tick));
-  update('temperature', `${next.climate.temperature}°C`);
   update('map-status', mapHost.dataset.renderer === 'flat' ? '生态视图 · 平面' : '生态视图');
   update('run-status', next.playing ? '演化中' : '已暂停');
   element('run-dot').classList.toggle('paused', !next.playing);
@@ -221,15 +278,7 @@ function refresh(next: Frame) {
   play.setAttribute('aria-label', next.playing ? '暂停模拟' : '继续模拟');
   step.disabled = next.playing;
   for (const button of speedButtons) button.setAttribute('aria-pressed', String(Number(button.dataset.speed) === next.speed));
-  if (document.activeElement !== temperature) {
-    temperature.value = String(next.climate.temperature);
-    update('set-temperature-value', `${temperature.value}°C`);
-  }
-  if (document.activeElement !== rain) {
-    rain.value = String(next.climate.rain);
-    update('set-rain-value', `${rain.value}%`);
-  }
-  update('rain-trend', percent(next.rainTrend));
+  refreshClimate(next);
   const counts = populationCounts(next.creatures);
   update('living', fmt.format(next.creatures.length));
   update('births', fmt.format(next.births));
@@ -241,40 +290,18 @@ function refresh(next: Frame) {
   drawChart(next.census, { tick: next.tick, ...counts });
 }
 
-interface BrowserSave { savedAt: string; world: Save }
-function browserSave(): BrowserSave | null {
-  try {
-    const raw = localStorage.getItem(saveKey);
-    if (!raw) return null;
-    const data = JSON.parse(raw) as BrowserSave;
-    return data.world && typeof data.savedAt === 'string' && !Number.isNaN(Date.parse(data.savedAt)) ? data : null;
-  } catch { return null; }
-}
-
-function refreshSaveMenu() {
-  const saved = browserSave();
-  loadButton.disabled = !saved;
-  update('save-description', saved ? `${worldName(saved.world.seed)} · ${timeLabel(saved.world.tick)}` : '此浏览器暂无可读存档');
-}
-
 worker.onmessage = (event: MessageEvent<WorkerReply>) => {
   const data = event.data;
-  if (data.type === 'frame') refresh(data.frame);
+  if (data.type === 'frame') refresh(data.frame, data.epoch);
   if (data.type === 'notice') {
+    if (data.intervention) evolution.feedback(data.message);
     if (data.giftId === undefined) notice(data.message);
     else {
       lastGift = { id: data.giftId, message: data.message };
       refreshGiftResult();
     }
   }
-  if (data.type === 'saved') {
-    saveButton.disabled = false;
-    try {
-      localStorage.setItem(saveKey, JSON.stringify({ savedAt: new Date().toISOString(), world: data.save }));
-      refreshSaveMenu();
-      notice('已保存到此浏览器。');
-    } catch { notice('浏览器无法写入存档。'); }
-  }
+  if (data.type === 'saved') void atlas.saved(data.slot, data.save);
 };
 worker.addEventListener('error', () => {
   update('map-status', '模拟加载失败');
@@ -313,33 +340,22 @@ element('zoom-out').addEventListener('click', () => map.zoom(0.80));
 element('reset-view').addEventListener('click', () => map.reset());
 track.addEventListener('click', trackCurrent);
 trackFromLineage.addEventListener('click', trackCurrent);
+lineagePicker.addEventListener('change', () => send({ type: 'track', id: Number(lineagePicker.value) }));
+element('breed-lineage').addEventListener('click', () => {
+  showTab('evolution');
+  evolution.showLineage();
+});
+element('atlas-open').addEventListener('click', atlas.open);
 for (const button of gifts) button.addEventListener('click', () => {
   if (selected !== null) send({ type: 'gift', id: selected, gift: button.dataset.gift as Gift });
 });
 temperature.addEventListener('input', () => update('set-temperature-value', `${temperature.value}°C`));
-temperature.addEventListener('change', () => send({ type: 'climate', climate: { temperature: temperature.valueAsNumber } }));
+temperature.addEventListener('change', () => send({ type: 'climate', region: activeRegion, climate: { temperature: temperature.valueAsNumber } }));
 rain.addEventListener('input', () => update('set-rain-value', `${rain.value}%`));
-rain.addEventListener('change', () => send({ type: 'climate', climate: { rain: rain.valueAsNumber } }));
-element('reset-climate').addEventListener('click', () => send({ type: 'climate', climate: { ...INITIAL_CLIMATE } }));
-document.addEventListener('pointerdown', event => {
-  if (!saveMenu.contains(event.target as Node)) saveMenu.open = false;
-});
-saveMenu.addEventListener('toggle', () => { if (saveMenu.open) refreshSaveMenu(); });
-saveButton.addEventListener('click', () => {
-  if (!frame) return;
-  saveMenu.open = false;
-  saveButton.disabled = true;
-  send({ type: 'save' });
-});
-loadButton.addEventListener('click', () => {
-  const saved = browserSave();
-  saveMenu.open = false;
-  if (saved) {
-    lastGift = null;
-    refreshGiftResult();
-    send({ type: 'load', save: saved.world });
-  }
-  else notice('此浏览器暂无可读存档。');
+rain.addEventListener('change', () => send({ type: 'climate', region: activeRegion, climate: { rain: rain.valueAsNumber } }));
+element('reset-climate').addEventListener('click', () => {
+  const biome = frame?.tiles[activeRegion]?.biome;
+  send({ type: 'climate', region: activeRegion, climate: biome ? { ...BIOMES[biome].climate } : { ...INITIAL_CLIMATE } });
 });
 const newDialog = element<HTMLDialogElement>('new-dialog');
 const seedInput = element<HTMLInputElement>('seed-input');
@@ -361,8 +377,7 @@ element('new-form').addEventListener('submit', event => {
   send({ type: 'new', seed: seedInput.valueAsNumber });
 });
 document.addEventListener('keydown', event => {
-  if (event.code !== 'Space' || event.repeat || newDialog.open || (event.target as HTMLElement).closest('input,button,select,summary,a,textarea')) return;
+  if (event.code !== 'Space' || event.repeat || document.querySelector('dialog[open]') || (event.target as HTMLElement).closest('input,button,select,summary,a,textarea')) return;
   event.preventDefault();
   togglePlay();
 });
-refreshSaveMenu();

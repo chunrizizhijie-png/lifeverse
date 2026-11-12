@@ -1,7 +1,8 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { clamp, MAP_HALF, Terrain } from '../sim/terrain.ts';
-import { creatureName, MAX_POPULATION } from '../sim/types.ts';
+import { speciesName } from '../sim/evolution.ts';
+import { clamp, MAP_HALF, Terrain, tileLayoutKey } from '../sim/terrain.ts';
+import { ATLAS_SIZE, creatureName, MAX_POPULATION, ROLES } from '../sim/types.ts';
 import type { Creature, Frame } from '../sim/types.ts';
 import { island } from './landscape.ts';
 import { model, modelMaterial, portraitModel, scaleFor, tintFor } from './models.ts';
@@ -12,6 +13,7 @@ export interface MapView {
   select(id: number | null): void;
   zoom(factor: number): void;
   reset(): void;
+  focusRegion(index: number): void;
 }
 
 function light(scene: THREE.Scene, shadows = false) {
@@ -40,8 +42,6 @@ interface BodyBatch {
   detail: THREE.InstancedMesh;
 }
 
-const tag = (creature: Creature) => `${creatureName(creature.role, creature.form)} · ${String(creature.id).padStart(3, '0')}`;
-
 class IslandView implements MapView {
   private readonly scene = new THREE.Scene();
   private readonly renderer: THREE.WebGLRenderer;
@@ -52,10 +52,14 @@ class IslandView implements MapView {
   private readonly scratch = new THREE.Vector3();
   private readonly color = new THREE.Color();
   private readonly selectedRing: THREE.Mesh;
+  private readonly markers = new THREE.InstancedMesh(new THREE.IcosahedronGeometry(1, 0),
+    new THREE.MeshBasicMaterial(), MAX_POPULATION * ATLAS_SIZE);
   private readonly poses = new Map<number, { x: number; z: number }>();
   private readonly hits: { id: number; x: number; y: number }[] = [];
   private terrain?: Terrain;
   private landscape?: ReturnType<typeof island>;
+  private layout = '';
+  private viewScale = 1;
   private frame?: Frame;
   private selected: number | null = null;
   private width = 1;
@@ -89,6 +93,9 @@ class IslandView implements MapView {
     this.selectedRing.renderOrder = 4;
     this.selectedRing.visible = false;
     this.scene.add(this.selectedRing);
+    this.markers.frustumCulled = false;
+    this.markers.count = 0;
+    this.scene.add(this.markers);
 
     let press: { x: number; y: number } | undefined;
     canvas.addEventListener('pointerdown', event => {
@@ -116,7 +123,7 @@ class IslandView implements MapView {
     this.width = Math.max(this.host.clientWidth, 1);
     this.height = Math.max(this.host.clientHeight, 1);
     const aspect = this.width / this.height;
-    const extent = Math.max(113, 186 / aspect);
+    const extent = Math.max(113, 186 / aspect) * this.viewScale;
     this.camera.left = -extent * aspect / 2;
     this.camera.right = extent * aspect / 2;
     this.camera.top = extent / 2;
@@ -125,11 +132,16 @@ class IslandView implements MapView {
     this.renderer.setSize(this.width, this.height, false);
   }
 
-  reset() {
-    this.camera.position.set(112, 106, 141);
-    this.camera.zoom = 1;
+  reset() { this.focusRegion(-1); }
+
+  focusRegion(index: number) {
+    if (index >= 0 && (!this.terrain || index >= this.terrain.tiles.length)) return;
+    const center = index >= 0 ? this.terrain!.tileCenter(index) : { x: 0, z: 0 };
+    const distance = index < 0 ? this.viewScale : 1;
+    this.camera.position.set(center.x + 112 * distance, 106 * distance, center.z + 141 * distance);
+    this.camera.zoom = index < 0 ? 1 : this.viewScale;
     this.camera.updateProjectionMatrix();
-    this.controls.target.set(0, 4.4, 1.2);
+    this.controls.target.set(center.x, 4.4, center.z + 1.2);
     this.controls.update();
   }
 
@@ -141,15 +153,28 @@ class IslandView implements MapView {
   select(id: number | null) { this.selected = id; }
 
   setFrame(frame: Frame) {
-    if (this.terrain?.seed !== frame.seed) {
+    const layout = `${frame.seed}|${tileLayoutKey(frame.tiles)}`;
+    if (this.layout !== layout) {
       if (this.landscape) {
         this.scene.remove(this.landscape.group);
         this.landscape.dispose();
       }
-      this.terrain = new Terrain(frame.seed);
+      for (const { skin, detail } of this.batches.values()) {
+        this.scene.remove(skin, detail);
+        skin.dispose();
+        detail.dispose();
+      }
+      this.batches.clear();
+      this.layout = layout;
+      this.terrain = new Terrain(frame.seed, frame.tiles);
+      this.viewScale = frame.tiles.length === 1 ? 1 : 4.55;
+      this.camera.far = frame.tiles.length === 1 ? 420 : 2400;
+      this.controls.maxZoom = this.viewScale * 4.7;
+      this.renderer.shadowMap.enabled = frame.tiles.length === 1;
       this.landscape = island(this.terrain);
       this.scene.add(this.landscape.group);
       this.poses.clear();
+      this.resize();
       this.reset();
     }
     if (this.frame && this.frame.tick > frame.tick) this.poses.clear();
@@ -172,8 +197,9 @@ class IslandView implements MapView {
     if (existing) return existing;
 
     const parts = model(creature.role, tall, creature.form);
-    const skin = new THREE.InstancedMesh(parts.skin, modelMaterial(), MAX_POPULATION);
-    const detail = new THREE.InstancedMesh(parts.detail, modelMaterial(), MAX_POPULATION);
+    const limit = MAX_POPULATION * (this.terrain?.tiles.length ?? 1);
+    const skin = new THREE.InstancedMesh(parts.skin, modelMaterial(), limit);
+    const detail = new THREE.InstancedMesh(parts.detail, modelMaterial(), limit);
     skin.frustumCulled = detail.frustumCulled = false;
     skin.count = detail.count = 0;
     skin.castShadow = true;
@@ -186,33 +212,48 @@ class IslandView implements MapView {
   private draw(time: number) {
     const frame = this.frame;
     const terrain = this.terrain;
-    if (!frame || !terrain || this.host.clientWidth === 0) return;
+    if (!frame || !terrain || this.host.clientWidth === 0 || document.querySelector('dialog[open]')) return;
     this.controls.update();
     this.camera.updateMatrixWorld();
     this.landscape?.animate(time);
     this.hits.length = 0;
     this.selectedRing.visible = false;
     this.label.hidden = true;
+    this.markers.count = 0;
+    const overview = this.viewScale > 1 && this.camera.zoom < this.viewScale * 0.63;
     for (const { skin, detail } of this.batches.values()) skin.count = detail.count = 0;
     for (const c of frame.creatures) {
       const pose = this.poses.get(c.id) ?? { x: c.x, z: c.z };
-      pose.x += (c.x - pose.x) * 0.16;
-      pose.z += (c.z - pose.z) * 0.16;
+      const dx = c.x - pose.x;
+      const dz = c.z - pose.z;
+      const blend = dx * dx + dz * dz > 1600 ? 1 : 0.16;
+      pose.x += dx * blend;
+      pose.z += dz * blend;
       this.poses.set(c.id, pose);
       const height = Math.max(0.04, terrain.height(pose.x, pose.z));
       const scale = scaleFor(c);
-      const batch = this.batchFor(c);
-      const index = batch.skin.count++;
-      batch.detail.count++;
-      const bob = frame.playing ? Math.sin(time * 9 + c.id * 2.3) * 0.055 : 0;
-      this.dummy.position.set(pose.x, height + bob, pose.z);
-      this.dummy.rotation.set(0, Math.PI / 2 - c.angle, 0);
-      this.dummy.scale.set(scale, scale, scale * (1 + (c.genes.speed - 1) * 0.20));
-      this.dummy.updateMatrix();
-      batch.skin.setMatrixAt(index, this.dummy.matrix);
-      batch.detail.setMatrixAt(index, this.dummy.matrix);
-      batch.skin.setColorAt(index, tintFor(c, this.color));
       const hit = this.project(pose.x, height + 0.68 * scale, pose.z);
+      if (hit.x < -30 || hit.y < -30 || hit.x > this.width + 30 || hit.y > this.height + 30) continue;
+      if (overview && c.id !== this.selected) {
+        const index = this.markers.count++;
+        this.dummy.position.set(pose.x, height + 1.12, pose.z);
+        this.dummy.scale.setScalar(1.15 + scale * 0.65);
+        this.dummy.updateMatrix();
+        this.markers.setMatrixAt(index, this.dummy.matrix);
+        this.markers.setColorAt(index, this.color.set(ROLES[c.role].color));
+      } else {
+        const batch = this.batchFor(c);
+        const index = batch.skin.count++;
+        batch.detail.count++;
+        const bob = frame.playing ? Math.sin(time * 9 + c.id * 2.3) * 0.055 : 0;
+        this.dummy.position.set(pose.x, height + bob, pose.z);
+        this.dummy.rotation.set(0, Math.PI / 2 - c.angle, 0);
+        this.dummy.scale.set(scale, scale, scale * (1 + (c.genes.speed - 1) * 0.20));
+        this.dummy.updateMatrix();
+        batch.skin.setMatrixAt(index, this.dummy.matrix);
+        batch.detail.setMatrixAt(index, this.dummy.matrix);
+        batch.skin.setColorAt(index, tintFor(c, this.color));
+      }
       this.hits.push({ id: c.id, ...hit });
       if (c.id !== this.selected) continue;
       this.selectedRing.visible = true;
@@ -221,7 +262,10 @@ class IslandView implements MapView {
       const point = this.project(pose.x, height + 2.1 * scale, pose.z);
       if (point.x > 64 && point.x < this.width - 64 && point.y > 54 && point.y < this.height - 26) {
         this.label.hidden = false;
-        if (this.label.textContent !== tag(c)) this.label.textContent = tag(c);
+        const branch = frame.species.find(species => species.id === c.species);
+        const name = branch?.niche ? speciesName(branch) : creatureName(c.role, c.form);
+        const label = `${name} · ${String(c.id).padStart(3, '0')}`;
+        if (this.label.textContent !== label) this.label.textContent = label;
         this.label.style.left = `${point.x}px`;
         this.label.style.top = `${point.y}px`;
       }
@@ -230,6 +274,10 @@ class IslandView implements MapView {
       if (!skin.count) continue;
       skin.instanceMatrix.needsUpdate = detail.instanceMatrix.needsUpdate = true;
       if (skin.instanceColor) skin.instanceColor.needsUpdate = true;
+    }
+    if (this.markers.count) {
+      this.markers.instanceMatrix.needsUpdate = true;
+      if (this.markers.instanceColor) this.markers.instanceColor.needsUpdate = true;
     }
     this.renderer.render(this.scene, this.camera);
   }
